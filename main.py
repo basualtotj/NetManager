@@ -5,7 +5,10 @@ FastAPI + SQLite backend for CCTV infrastructure management
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+import os
 
 from database import (
     init_db, get_db,
@@ -566,3 +569,16 @@ def seed_donbosco(db: Session = Depends(get_db)):
 @app.get("/api/health", tags=["Admin"])
 def health():
     return {"status": "ok", "version": "1.0.0"}
+
+
+# ============================================
+# FRONTEND (Static Files)
+# ============================================
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+@app.get("/", include_in_schema=False)
+def serve_frontend():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

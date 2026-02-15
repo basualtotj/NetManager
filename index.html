@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetManager — CCTV & Network</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0e17; overflow: hidden; }
+    #root { width: 100vw; height: 100vh; }
+    #loading {
+      display: flex; align-items: center; justify-content: center;
+      height: 100vh; background: #0a0e17; color: #94a3b8;
+      font-family: 'Segoe UI', sans-serif; font-size: 14px;
+      flex-direction: column; gap: 12px;
+    }
+    #loading .spinner {
+      width: 32px; height: 32px; border: 3px solid #1e293b;
+      border-top: 3px solid #3b82f6; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="loading">
+      <div class="spinner"></div>
+      <span>Cargando NetManager...</span>
+    </div>
+  </div>
+
+  <script>
+    // Point API client to same origin
+    window.NETMANAGER_API = "";
+  </script>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-type="module" src="/static/NetManager.jsx"></script>
+  <script type="text/babel">
+    // Wait for module to load then render
+    const checkAndRender = () => {
+      const mod = window.__NetManagerApp;
+      if (mod) {
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(mod));
+      } else {
+        setTimeout(checkAndRender, 100);
+      }
+    };
+    checkAndRender();
+  </script>
+</body>
+</html>

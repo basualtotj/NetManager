@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+const { useState, useEffect, useCallback, useRef } = React;
 
 // ============================================
 // DATA STORE (in-memory, persistent via state)
@@ -572,7 +572,7 @@ function StatCard({ label, value, color, icon, onClick }) {
 // ============================================
 // MAIN APP
 // ============================================
-export default function App() {
+function App() {
   const [data, setData] = useState(() => {
     try {
       const saved = null;
@@ -2473,3 +2473,5 @@ function BulkCreateForm({ nvrs, racks, switches, patchPanels, allCameras, onSave
     </div>
   );
 }
+
+window.__NetManagerApp = App;
