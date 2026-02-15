@@ -12,7 +12,8 @@ import os
 
 from database import (
     init_db, get_db,
-    Site, Building, Rack, Router, Switch, Recorder, PatchPanel, Camera
+    Site, Building, Rack, Router, Switch, Recorder, PatchPanel, Camera,
+    User, UserSite
 )
 from schemas import (
     SiteCreate, SiteUpdate, SiteOut,
@@ -23,7 +24,14 @@ from schemas import (
     RecorderCreate, RecorderUpdate, RecorderOut,
     PatchPanelCreate, PatchPanelUpdate, PatchPanelOut,
     CameraCreate, CameraUpdate, CameraOut, CameraBulkCreate,
-    DashboardStats, SiteFullExport
+    DashboardStats, SiteFullExport,
+    LoginRequest, LoginResponse, UserCreate, UserUpdate, UserOut,
+    UserSiteAssign, SiteListItem
+)
+from auth import (
+    hash_password, verify_password, create_token,
+    get_current_user, require_admin, get_user_site_ids,
+    check_site_access, ensure_admin_exists
 )
 
 # ============================================
@@ -48,6 +56,9 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    db = next(get_db())
+    ensure_admin_exists(db)
+    db.close()
 
 
 # ============================================
@@ -87,31 +98,128 @@ def _delete(db: Session, model, item_id: int):
 
 
 # ============================================
-# SITES
+# AUTH ENDPOINTS
+# ============================================
+
+@app.post("/api/auth/login", response_model=LoginResponse, tags=["Auth"])
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter_by(username=data.username).first()
+    if not user or not verify_password(data.password, user.password_hash):
+        raise HTTPException(401, "Usuario o contraseña incorrectos")
+    if not user.active:
+        raise HTTPException(403, "Usuario desactivado")
+    token = create_token(user.id, user.username, user.role)
+    site_ids = get_user_site_ids(user, db)
+    return LoginResponse(
+        token=token,
+        user=UserOut(id=user.id, username=user.username, display_name=user.display_name,
+                     role=user.role, active=user.active, site_ids=site_ids)
+    )
+
+@app.get("/api/auth/me", response_model=UserOut, tags=["Auth"])
+def get_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    site_ids = get_user_site_ids(user, db)
+    return UserOut(id=user.id, username=user.username, display_name=user.display_name,
+                   role=user.role, active=user.active, site_ids=site_ids)
+
+
+# ============================================
+# USER MANAGEMENT (admin only)
+# ============================================
+
+@app.post("/api/users", response_model=UserOut, tags=["Users"])
+def create_user(data: UserCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.query(User).filter_by(username=data.username).first():
+        raise HTTPException(400, f"Username '{data.username}' ya existe")
+    user = User(username=data.username, display_name=data.display_name,
+                password_hash=hash_password(data.password), role=data.role)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return UserOut(id=user.id, username=user.username, display_name=user.display_name,
+                   role=user.role, active=user.active, site_ids=[])
+
+@app.get("/api/users", response_model=List[UserOut], tags=["Users"])
+def list_users(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    result = []
+    for u in users:
+        site_ids = [us.site_id for us in db.query(UserSite).filter_by(user_id=u.id).all()]
+        result.append(UserOut(id=u.id, username=u.username, display_name=u.display_name,
+                              role=u.role, active=u.active, site_ids=site_ids))
+    return result
+
+@app.put("/api/users/{uid}", response_model=UserOut, tags=["Users"])
+def update_user(uid: int, data: UserUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.query(User).get(uid)
+    if not user:
+        raise HTTPException(404, "Usuario no encontrado")
+    if data.display_name is not None:
+        user.display_name = data.display_name
+    if data.role is not None:
+        user.role = data.role
+    if data.active is not None:
+        user.active = data.active
+    if data.password:
+        user.password_hash = hash_password(data.password)
+    db.commit()
+    db.refresh(user)
+    site_ids = [us.site_id for us in db.query(UserSite).filter_by(user_id=user.id).all()]
+    return UserOut(id=user.id, username=user.username, display_name=user.display_name,
+                   role=user.role, active=user.active, site_ids=site_ids)
+
+@app.delete("/api/users/{uid}", tags=["Users"])
+def delete_user(uid: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return _delete(db, User, uid)
+
+@app.put("/api/users/{uid}/sites", response_model=UserOut, tags=["Users"])
+def assign_user_sites(uid: int, data: UserSiteAssign, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Assign sites to a viewer user (replaces all current assignments)"""
+    user = db.query(User).get(uid)
+    if not user:
+        raise HTTPException(404, "Usuario no encontrado")
+    db.query(UserSite).filter_by(user_id=uid).delete()
+    for sid in data.site_ids:
+        db.add(UserSite(user_id=uid, site_id=sid))
+    db.commit()
+    return UserOut(id=user.id, username=user.username, display_name=user.display_name,
+                   role=user.role, active=user.active, site_ids=data.site_ids)
+
+
+# ============================================
+# SITES (protected)
 # ============================================
 
 @app.post("/api/sites", response_model=SiteOut, tags=["Sites"])
-def create_site(data: SiteCreate, db: Session = Depends(get_db)):
+def create_site(data: SiteCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return _create(db, Site, data.model_dump())
 
 
-@app.get("/api/sites", response_model=List[SiteOut], tags=["Sites"])
-def list_sites(db: Session = Depends(get_db)):
-    return db.query(Site).all()
+@app.get("/api/sites", response_model=List[SiteListItem], tags=["Sites"])
+def list_sites(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List sites the current user can access"""
+    site_ids = get_user_site_ids(user, db)
+    sites = db.query(Site).filter(Site.id.in_(site_ids)).all() if site_ids else []
+    result = []
+    for s in sites:
+        cam_count = db.query(Camera).filter_by(site_id=s.id).count()
+        result.append(SiteListItem(id=s.id, name=s.name, address=s.address, camera_count=cam_count))
+    return result
 
 
 @app.get("/api/sites/{site_id}", response_model=SiteOut, tags=["Sites"])
-def get_site(site_id: int, db: Session = Depends(get_db)):
+def get_site(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    check_site_access(user, site_id, db)
     return _get_or_404(db, Site, site_id)
 
 
 @app.put("/api/sites/{site_id}", response_model=SiteOut, tags=["Sites"])
-def update_site(site_id: int, data: SiteUpdate, db: Session = Depends(get_db)):
+def update_site(site_id: int, data: SiteUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return _update(db, Site, site_id, data.model_dump())
 
 
 @app.delete("/api/sites/{site_id}", tags=["Sites"])
-def delete_site(site_id: int, db: Session = Depends(get_db)):
+def delete_site(site_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return _delete(db, Site, site_id)
 
 
@@ -120,8 +228,9 @@ def delete_site(site_id: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.get("/api/sites/{site_id}/full", response_model=SiteFullExport, tags=["Sites"])
-def get_site_full(site_id: int, db: Session = Depends(get_db)):
+def get_site_full(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all data for a site in one call — used to hydrate the frontend"""
+    check_site_access(user, site_id, db)
     site = _get_or_404(db, Site, site_id)
     return SiteFullExport(
         site=site,
@@ -140,7 +249,8 @@ def get_site_full(site_id: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.get("/api/sites/{site_id}/dashboard", response_model=DashboardStats, tags=["Dashboard"])
-def get_dashboard(site_id: int, db: Session = Depends(get_db)):
+def get_dashboard(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    check_site_access(user, site_id, db)
     _get_or_404(db, Site, site_id)
     cams = db.query(Camera).filter_by(site_id=site_id).all()
     recs = db.query(Recorder).filter_by(site_id=site_id).all()
@@ -187,19 +297,19 @@ def get_dashboard(site_id: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/buildings", response_model=BuildingOut, tags=["Buildings"])
-def create_building(data: BuildingCreate, db: Session = Depends(get_db)):
+def create_building(data: BuildingCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, Building, data.model_dump())
 
 @app.get("/api/sites/{site_id}/buildings", response_model=List[BuildingOut], tags=["Buildings"])
-def list_buildings(site_id: int, db: Session = Depends(get_db)):
+def list_buildings(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Building).filter_by(site_id=site_id).all()
 
 @app.put("/api/buildings/{bid}", response_model=BuildingOut, tags=["Buildings"])
-def update_building(bid: int, data: BuildingUpdate, db: Session = Depends(get_db)):
+def update_building(bid: int, data: BuildingUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, Building, bid, data.model_dump())
 
 @app.delete("/api/buildings/{bid}", tags=["Buildings"])
-def delete_building(bid: int, db: Session = Depends(get_db)):
+def delete_building(bid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Building, bid)
 
 
@@ -208,19 +318,19 @@ def delete_building(bid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/racks", response_model=RackOut, tags=["Racks"])
-def create_rack(data: RackCreate, db: Session = Depends(get_db)):
+def create_rack(data: RackCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, Rack, data.model_dump())
 
 @app.get("/api/sites/{site_id}/racks", response_model=List[RackOut], tags=["Racks"])
-def list_racks(site_id: int, db: Session = Depends(get_db)):
+def list_racks(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Rack).filter_by(site_id=site_id).all()
 
 @app.put("/api/racks/{rid}", response_model=RackOut, tags=["Racks"])
-def update_rack(rid: int, data: RackUpdate, db: Session = Depends(get_db)):
+def update_rack(rid: int, data: RackUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, Rack, rid, data.model_dump())
 
 @app.delete("/api/racks/{rid}", tags=["Racks"])
-def delete_rack(rid: int, db: Session = Depends(get_db)):
+def delete_rack(rid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Rack, rid)
 
 
@@ -229,19 +339,19 @@ def delete_rack(rid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/routers", response_model=RouterOut, tags=["Routers"])
-def create_router(data: RouterCreate, db: Session = Depends(get_db)):
+def create_router(data: RouterCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, Router, data.model_dump())
 
 @app.get("/api/sites/{site_id}/routers", response_model=List[RouterOut], tags=["Routers"])
-def list_routers(site_id: int, db: Session = Depends(get_db)):
+def list_routers(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Router).filter_by(site_id=site_id).all()
 
 @app.put("/api/routers/{rid}", response_model=RouterOut, tags=["Routers"])
-def update_router(rid: int, data: RouterUpdate, db: Session = Depends(get_db)):
+def update_router(rid: int, data: RouterUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, Router, rid, data.model_dump())
 
 @app.delete("/api/routers/{rid}", tags=["Routers"])
-def delete_router(rid: int, db: Session = Depends(get_db)):
+def delete_router(rid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Router, rid)
 
 
@@ -250,19 +360,19 @@ def delete_router(rid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/switches", response_model=SwitchOut, tags=["Switches"])
-def create_switch(data: SwitchCreate, db: Session = Depends(get_db)):
+def create_switch(data: SwitchCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, Switch, data.model_dump())
 
 @app.get("/api/sites/{site_id}/switches", response_model=List[SwitchOut], tags=["Switches"])
-def list_switches(site_id: int, db: Session = Depends(get_db)):
+def list_switches(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Switch).filter_by(site_id=site_id).all()
 
 @app.put("/api/switches/{sid}", response_model=SwitchOut, tags=["Switches"])
-def update_switch(sid: int, data: SwitchUpdate, db: Session = Depends(get_db)):
+def update_switch(sid: int, data: SwitchUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, Switch, sid, data.model_dump())
 
 @app.delete("/api/switches/{sid}", tags=["Switches"])
-def delete_switch(sid: int, db: Session = Depends(get_db)):
+def delete_switch(sid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Switch, sid)
 
 
@@ -271,25 +381,25 @@ def delete_switch(sid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/recorders", response_model=RecorderOut, tags=["Recorders"])
-def create_recorder(data: RecorderCreate, db: Session = Depends(get_db)):
+def create_recorder(data: RecorderCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     d = data.model_dump()
     d["nics"] = [n.model_dump() if hasattr(n, "model_dump") else n for n in d.get("nics", [])]
     d["disks"] = [dk.model_dump() if hasattr(dk, "model_dump") else dk for dk in d.get("disks", [])]
     return _create(db, Recorder, d)
 
 @app.get("/api/sites/{site_id}/recorders", response_model=List[RecorderOut], tags=["Recorders"])
-def list_recorders(site_id: int, db: Session = Depends(get_db)):
+def list_recorders(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Recorder).filter_by(site_id=site_id).all()
 
 @app.put("/api/recorders/{rid}", response_model=RecorderOut, tags=["Recorders"])
-def update_recorder(rid: int, data: RecorderUpdate, db: Session = Depends(get_db)):
+def update_recorder(rid: int, data: RecorderUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     d = data.model_dump()
     d["nics"] = [n.model_dump() if hasattr(n, "model_dump") else n for n in d.get("nics", [])]
     d["disks"] = [dk.model_dump() if hasattr(dk, "model_dump") else dk for dk in d.get("disks", [])]
     return _update(db, Recorder, rid, d)
 
 @app.delete("/api/recorders/{rid}", tags=["Recorders"])
-def delete_recorder(rid: int, db: Session = Depends(get_db)):
+def delete_recorder(rid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Recorder, rid)
 
 
@@ -298,19 +408,19 @@ def delete_recorder(rid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/patch-panels", response_model=PatchPanelOut, tags=["PatchPanels"])
-def create_patch_panel(data: PatchPanelCreate, db: Session = Depends(get_db)):
+def create_patch_panel(data: PatchPanelCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, PatchPanel, data.model_dump())
 
 @app.get("/api/sites/{site_id}/patch-panels", response_model=List[PatchPanelOut], tags=["PatchPanels"])
-def list_patch_panels(site_id: int, db: Session = Depends(get_db)):
+def list_patch_panels(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(PatchPanel).filter_by(site_id=site_id).all()
 
 @app.put("/api/patch-panels/{pid}", response_model=PatchPanelOut, tags=["PatchPanels"])
-def update_patch_panel(pid: int, data: PatchPanelUpdate, db: Session = Depends(get_db)):
+def update_patch_panel(pid: int, data: PatchPanelUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, PatchPanel, pid, data.model_dump())
 
 @app.delete("/api/patch-panels/{pid}", tags=["PatchPanels"])
-def delete_patch_panel(pid: int, db: Session = Depends(get_db)):
+def delete_patch_panel(pid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, PatchPanel, pid)
 
 
@@ -319,11 +429,11 @@ def delete_patch_panel(pid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.post("/api/cameras", response_model=CameraOut, tags=["Cameras"])
-def create_camera(data: CameraCreate, db: Session = Depends(get_db)):
+def create_camera(data: CameraCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _create(db, Camera, data.model_dump())
 
 @app.post("/api/cameras/bulk", response_model=List[CameraOut], tags=["Cameras"])
-def create_cameras_bulk(data: CameraBulkCreate, db: Session = Depends(get_db)):
+def create_cameras_bulk(data: CameraBulkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Create multiple cameras in a single transaction"""
     created = []
     for cam_data in data.cameras:
@@ -344,6 +454,7 @@ def list_cameras(
     recorder_id: Optional[int] = None,
     rack_id: Optional[int] = None,
     cam_type: Optional[str] = None,
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     q = db.query(Camera).filter_by(site_id=site_id)
@@ -358,11 +469,11 @@ def list_cameras(
     return q.order_by(Camera.channel).all()
 
 @app.get("/api/cameras/{cid}", response_model=CameraOut, tags=["Cameras"])
-def get_camera(cid: int, db: Session = Depends(get_db)):
+def get_camera(cid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _get_or_404(db, Camera, cid)
 
 @app.put("/api/cameras/{cid}", response_model=CameraOut, tags=["Cameras"])
-def update_camera(cid: int, data: CameraUpdate, db: Session = Depends(get_db)):
+def update_camera(cid: int, data: CameraUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _update(db, Camera, cid, data.model_dump())
 
 @app.put("/api/cameras/bulk-update", response_model=List[CameraOut], tags=["Cameras"])
@@ -370,6 +481,7 @@ def bulk_update_cameras(
     camera_ids: List[int],
     field: str = Query(...),
     value: str = Query(...),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Bulk update a single field on multiple cameras"""
@@ -388,7 +500,7 @@ def bulk_update_cameras(
     return updated
 
 @app.delete("/api/cameras/{cid}", tags=["Cameras"])
-def delete_camera(cid: int, db: Session = Depends(get_db)):
+def delete_camera(cid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _delete(db, Camera, cid)
 
 
@@ -397,7 +509,7 @@ def delete_camera(cid: int, db: Session = Depends(get_db)):
 # ============================================
 
 @app.get("/api/sites/{site_id}/validate", tags=["Validation"])
-def validate_site(site_id: int, db: Session = Depends(get_db)):
+def validate_site(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Run all validations and return conflicts"""
     cams = db.query(Camera).filter_by(site_id=site_id).all()
     switches = db.query(Switch).filter_by(site_id=site_id).all()

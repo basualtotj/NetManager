@@ -242,3 +242,46 @@ class SiteFullExport(BaseModel):
     recorders: List[RecorderOut] = []
     cameras: List[CameraOut] = []
     patch_panels: List[PatchPanelOut] = []
+
+
+# ============================================
+# AUTH
+# ============================================
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    token: str
+    user: "UserOut"
+
+class UserBase(BaseModel):
+    username: str
+    display_name: str = ""
+    role: str = "viewer"
+    active: bool = True
+
+class UserCreate(UserBase):
+    password: str
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    password: Optional[str] = None
+
+class UserOut(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    site_ids: List[int] = []
+
+class UserSiteAssign(BaseModel):
+    site_ids: List[int]
+
+class SiteListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    address: str = ""
+    camera_count: int = 0

@@ -213,3 +213,31 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# ============================================
+# AUTH MODELS
+# ============================================
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), unique=True, nullable=False)
+    display_name = Column(String(200), default="")
+    password_hash = Column(String(200), nullable=False)
+    role = Column(String(20), default="viewer")  # admin, viewer
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    site_access = relationship("UserSite", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserSite(Base):
+    """Many-to-many: which sites a viewer can access"""
+    __tablename__ = "user_sites"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+
+    user = relationship("User", back_populates="site_access")
+    site = relationship("Site")
