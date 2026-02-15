@@ -7,8 +7,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# SQLite database persisted via mount
-ENV DATABASE_URL=sqlite:///./data/netmanager.db
+# Create data directory for SQLite persistence
+RUN mkdir -p /app/data
+
+# 4 slashes = absolute path: sqlite:////app/data/netmanager.db
+ENV DATABASE_URL=sqlite:////app/data/netmanager.db
 
 EXPOSE 8000
 

@@ -10,7 +10,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./netmanager.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/netmanager.db")
+
+# Ensure data directory exists for Docker volume
+if DATABASE_URL.startswith("sqlite:////"):
+    _db_path = DATABASE_URL.replace("sqlite:////", "/")
+elif DATABASE_URL.startswith("sqlite:///"):
+    _db_path = DATABASE_URL.replace("sqlite:///", "")
+else:
+    _db_path = ""
+
+if _db_path:
+    _db_dir = os.path.dirname(_db_path)
+    if _db_dir and not os.path.exists(_db_dir):
+        os.makedirs(_db_dir, exist_ok=True)
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
 
