@@ -2,6 +2,7 @@
 NetManager — API Server
 FastAPI + SQLite backend for CCTV infrastructure management
 """
+import logging
 from typing import List, Optional
 import ipaddress
 from fastapi import FastAPI, Depends, HTTPException, Query
@@ -10,6 +11,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
+
+# ============================================
+# LOGGING CONFIG
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("netmanager")
 
 from database import (
     init_db, get_db,
@@ -869,16 +880,27 @@ async def test_nvr_connection(cid: int, admin: User = Depends(require_admin), db
     """Test NVR connection without syncing."""
     cred = _get_or_404(db, NvrCredential, cid)
     password = decrypt_password(cred.password_enc)
+    logger.info("Testing NVR connection: cred=%d ip=%s:%d", cid, cred.ip, cred.port)
     result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
     if result["ok"]:
         cred.last_status = "ok"
         cred.last_sync = _dt.utcnow()
         db.commit()
-        return {"ok": True, "message": f"Conexión exitosa — {len(result['cameras'])} cámaras detectadas"}
+        return {
+            "ok": True,
+            "message": f"Conexión exitosa — {len(result['cameras'])} cámaras detectadas",
+            "error_code": "",
+            "debug": result.get("debug", {})
+        }
     else:
         cred.last_status = "error"
         db.commit()
-        return {"ok": False, "message": result["error"]}
+        return {
+            "ok": False,
+            "message": result["error"],
+            "error_code": result.get("error_code", ""),
+            "debug": result.get("debug", {})
+        }
 
 
 @app.post("/api/nvr-credentials/{cid}/preview", tags=["NVR Sync"])
@@ -886,13 +908,21 @@ async def preview_nvr_sync(cid: int, admin: User = Depends(require_admin), db: S
     """Connect to NVR, get cameras, and compare with existing DB. Returns preview without making changes."""
     cred = _get_or_404(db, NvrCredential, cid)
     password = decrypt_password(cred.password_enc)
+    logger.info("Preview NVR sync: cred=%d ip=%s:%d", cid, cred.ip, cred.port)
     result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
 
     if not result["ok"]:
         cred.last_status = "error"
         db.commit()
-        return {"ok": False, "error": result["error"], "credential_id": cid,
-                "cameras": [], "new_cameras": [], "existing_cameras": [], "updated_cameras": []}
+        return {
+            "ok": False,
+            "error": result["error"],
+            "error_code": result.get("error_code", ""),
+            "base_url": result.get("base_url", ""),
+            "debug": result.get("debug", {}),
+            "credential_id": cid,
+            "cameras": [], "new_cameras": [], "existing_cameras": [], "updated_cameras": []
+        }
 
     nvr_cameras = result["cameras"]
     # Get existing cameras for this site + recorder
@@ -952,6 +982,7 @@ async def execute_nvr_sync(cid: int, req: NvrSyncRequest,
     """Execute NVR sync: add new cameras and/or update existing ones."""
     cred = _get_or_404(db, NvrCredential, cid)
     password = decrypt_password(cred.password_enc)
+    logger.info("Execute NVR sync: cred=%d action=%s ip=%s:%d", cid, req.action, cred.ip, cred.port)
     result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
 
     log = SyncLog(
@@ -965,7 +996,11 @@ async def execute_nvr_sync(cid: int, req: NvrSyncRequest,
         db.add(log)
         cred.last_status = "error"
         db.commit()
-        return NvrSyncResult(ok=False, action=req.action, message=result["error"])
+        return NvrSyncResult(
+            ok=False, action=req.action, message=result["error"],
+            error_code=result.get("error_code", ""),
+            base_url=result.get("base_url", ""),
+        )
 
     nvr_cameras = result["cameras"]
     log.cameras_found = len(nvr_cameras)
@@ -1050,6 +1085,7 @@ async def execute_nvr_sync(cid: int, req: NvrSyncRequest,
         cameras_updated=updated, cameras_online=online_count,
         cameras_offline=offline_count,
         message=" — ".join(msg_parts),
+        base_url=result.get("base_url", ""),
     )
 
 

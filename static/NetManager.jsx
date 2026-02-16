@@ -716,7 +716,13 @@ function AdminPanel({ authToken, onSyncComplete }) {
       const text = await r.text();
       try {
         const data = JSON.parse(text);
-        flash(data.message || data.detail || "Respuesta sin mensaje");
+        if (data.ok) {
+          flash(`✅ ${data.message}`);
+        } else {
+          const code = data.error_code ? ` [${data.error_code}]` : "";
+          const debugUrl = data.debug?.base_url ? ` (${data.debug.base_url})` : "";
+          flash(`❌${code} ${data.message || data.detail || "Error desconocido"}${debugUrl}`);
+        }
       } catch { flash("Respuesta inesperada del servidor"); }
       loadNvrCreds(nvrSiteId);
     } catch (e) { flash("Error de conexión al servidor: " + e.message); }
@@ -731,7 +737,12 @@ function AdminPanel({ authToken, onSyncComplete }) {
       try {
         const data = JSON.parse(text);
         if (data.ok) { setNvrPreview(data); }
-        else { flash(data.error || data.detail || "Error al conectar al NVR"); loadNvrCreds(nvrSiteId); }
+        else {
+          const code = data.error_code ? ` [${data.error_code}]` : "";
+          const debugUrl = data.base_url ? ` (${data.base_url})` : "";
+          flash(`❌${code} ${data.error || data.detail || "Error al conectar al NVR"}${debugUrl}`);
+          loadNvrCreds(nvrSiteId);
+        }
       } catch { flash("Respuesta inesperada del servidor (no JSON)"); }
     } catch (e) { flash("Error de conexión al servidor: " + e.message); }
     setNvrSyncing(false);
@@ -750,7 +761,10 @@ function AdminPanel({ authToken, onSyncComplete }) {
         if (data.ok) {
           flash(`✅ ${data.message}`);
           if ((data.cameras_added > 0 || data.cameras_updated > 0) && onSyncComplete) onSyncComplete();
-        } else { flash(`❌ ${data.message || data.detail}`); }
+        } else {
+          const code = data.error_code ? ` [${data.error_code}]` : "";
+          flash(`❌${code} ${data.message || data.detail}`);
+        }
       } catch { flash("Respuesta inesperada del servidor"); }
       setNvrPreview(null); loadNvrCreds(nvrSiteId); loadSyncLogs(nvrSiteId);
     } catch (e) { flash("Error de conexión: " + e.message); }

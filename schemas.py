@@ -379,6 +379,8 @@ class NvrSyncResult(BaseModel):
     cameras_online: int = 0
     cameras_offline: int = 0
     message: str = ""
+    error_code: str = ""
+    base_url: str = ""
 
 class SyncLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
