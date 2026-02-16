@@ -713,9 +713,13 @@ function AdminPanel({ authToken }) {
     setNvrTesting(cid);
     try {
       const r = await fetch(`${API_BASE}/api/nvr-credentials/${cid}/test`, { method: "POST", headers: hdrs });
-      const data = await r.json();
-      flash(data.message); loadNvrCreds(nvrSiteId);
-    } catch (e) { flash("Error de conexión: " + e.message); }
+      const text = await r.text();
+      try {
+        const data = JSON.parse(text);
+        flash(data.message || data.detail || "Respuesta sin mensaje");
+      } catch { flash("Respuesta inesperada del servidor"); }
+      loadNvrCreds(nvrSiteId);
+    } catch (e) { flash("Error de conexión al servidor: " + e.message); }
     setNvrTesting(null);
   };
 
@@ -723,9 +727,13 @@ function AdminPanel({ authToken }) {
     setNvrSyncing(true);
     try {
       const r = await fetch(`${API_BASE}/api/nvr-credentials/${cid}/preview`, { method: "POST", headers: hdrs });
-      if (r.ok) { setNvrPreview(await r.json()); }
-      else { const e = await r.json(); flash(e.detail || "Error al conectar"); }
-    } catch (e) { flash("Error: " + e.message); }
+      const text = await r.text();
+      try {
+        const data = JSON.parse(text);
+        if (r.ok) { setNvrPreview(data); }
+        else { flash(data.detail || "Error al conectar al NVR"); }
+      } catch { flash("Respuesta inesperada del servidor (no JSON)"); }
+    } catch (e) { flash("Error de conexión al servidor: " + e.message); }
     setNvrSyncing(false);
   };
 
@@ -736,10 +744,13 @@ function AdminPanel({ authToken }) {
         method: "POST", headers: hdrs,
         body: JSON.stringify({ credential_id: cid, action, add_new: addNew, update_existing: updateExisting })
       });
-      const data = await r.json();
-      if (data.ok) { flash(`✅ ${data.message}`); } else { flash(`❌ ${data.message}`); }
+      const text = await r.text();
+      try {
+        const data = JSON.parse(text);
+        if (data.ok) { flash(`✅ ${data.message}`); } else { flash(`❌ ${data.message || data.detail}`); }
+      } catch { flash("Respuesta inesperada del servidor"); }
       setNvrPreview(null); loadNvrCreds(nvrSiteId); loadSyncLogs(nvrSiteId);
-    } catch (e) { flash("Error: " + e.message); }
+    } catch (e) { flash("Error de conexión: " + e.message); }
     setNvrSyncing(false);
   };
 
@@ -938,10 +949,13 @@ function AdminPanel({ authToken }) {
           {nvrNewCred && nvrSiteId && (
             <div style={cardStyle}>
               <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>➕ Nueva Credencial NVR</h4>
+              <div style={{ background: "#0b1120", border: "1px solid #1e3a5f", borderRadius: "6px", padding: "10px 14px", marginBottom: "12px", fontSize: "11px", color: "#60a5fa" }}>
+                💡 El puerto es el <b>HTTP/Web</b> del NVR (generalmente <b>80</b>). No usar el puerto binario 37777.
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
                 <Field label="Etiqueta" value={nvrNewCred.label} onChange={v => setNvrNewCred({ ...nvrNewCred, label: v })} placeholder="Ej: NVR Principal" required />
                 <Field label="IP / Host" value={nvrNewCred.ip} onChange={v => setNvrNewCred({ ...nvrNewCred, ip: v })} placeholder="192.168.1.100" required />
-                <Field label="Puerto" value={nvrNewCred.port} onChange={v => setNvrNewCred({ ...nvrNewCred, port: v })} placeholder="80" />
+                <Field label="Puerto HTTP" value={nvrNewCred.port} onChange={v => setNvrNewCred({ ...nvrNewCred, port: v })} placeholder="80 (NO usar 37777)" />
                 <Field label="Usuario" value={nvrNewCred.username} onChange={v => setNvrNewCred({ ...nvrNewCred, username: v })} required />
                 <Field label="Contraseña" value={nvrNewCred.password} onChange={v => setNvrNewCred({ ...nvrNewCred, password: v })} type="password" required />
                 <div style={{ marginBottom: "12px" }}>
@@ -969,7 +983,7 @@ function AdminPanel({ authToken }) {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
                     <Field label="Etiqueta" value={nvrEditCred.label} onChange={v => setNvrEditCred({ ...nvrEditCred, label: v })} />
                     <Field label="IP / Host" value={nvrEditCred.ip} onChange={v => setNvrEditCred({ ...nvrEditCred, ip: v })} />
-                    <Field label="Puerto" value={nvrEditCred.port} onChange={v => setNvrEditCred({ ...nvrEditCred, port: v })} />
+                    <Field label="Puerto HTTP (no 37777)" value={nvrEditCred.port} onChange={v => setNvrEditCred({ ...nvrEditCred, port: v })} />
                     <Field label="Usuario" value={nvrEditCred.username} onChange={v => setNvrEditCred({ ...nvrEditCred, username: v })} />
                     <Field label="Nueva Contraseña" value={nvrEditCred.newPassword || ""} onChange={v => setNvrEditCred({ ...nvrEditCred, newPassword: v })} type="password" placeholder="Dejar vacío para no cambiar" />
                     <div style={{ marginBottom: "12px" }}>

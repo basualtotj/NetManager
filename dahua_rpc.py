@@ -14,7 +14,7 @@ MODEL_RULES = [
     {"serial_prefix": "9F0E033PAG", "version_contains": "", "model": "DH-IPC-HFW2441S-S"},
 ]
 
-TIMEOUT = 10  # seconds
+TIMEOUT = 15  # seconds (generous for VPN connections)
 
 
 def _infer_model(serial: str, version: str) -> str:
@@ -40,8 +40,12 @@ async def dahua_login(client: httpx.AsyncClient, base_url: str, username: str, p
             "id": 1
         }, timeout=TIMEOUT)
         d = r.json()
-    except Exception:
-        return None
+    except httpx.ConnectError:
+        raise ConnectionError(f"No se pudo conectar a {base_url} — verificar IP, puerto y acceso de red/VPN")
+    except httpx.TimeoutException:
+        raise ConnectionError(f"Timeout conectando a {base_url} — la conexión tardó más de {TIMEOUT}s")
+    except Exception as e:
+        raise ConnectionError(f"Error de conexión a {base_url}: {type(e).__name__}: {e}")
 
     if "params" not in d:
         return None
@@ -70,8 +74,8 @@ async def dahua_login(client: httpx.AsyncClient, base_url: str, username: str, p
             "session": sid
         }, timeout=TIMEOUT)
         data = r.json()
-    except Exception:
-        return None
+    except Exception as e:
+        raise ConnectionError(f"Error en login paso 2: {e}")
 
     if data.get("result"):
         return sid
@@ -195,13 +199,18 @@ async def sync_nvr(ip: str, port: int, username: str, password: str) -> Dict[str
     """
     Complete NVR sync: login, get cameras, get status, logout.
     Returns {ok, cameras, error}.
+    Port should be the HTTP port (usually 80), NOT the binary port (37777).
     """
-    base_url = f"http://{ip}:{port}" if port != 80 else f"http://{ip}"
+    base_url = f"http://{ip}:{port}"
 
     async with httpx.AsyncClient() as client:
-        sid = await dahua_login(client, base_url, username, password)
+        try:
+            sid = await dahua_login(client, base_url, username, password)
+        except ConnectionError as e:
+            return {"ok": False, "cameras": [], "error": str(e)}
+
         if not sid:
-            return {"ok": False, "cameras": [], "error": "Login failed — check credentials and NVR accessibility"}
+            return {"ok": False, "cameras": [], "error": f"Login rechazado por el NVR en {base_url} — credenciales incorrectas o usuario bloqueado"}
 
         try:
             cameras = await dahua_get_cameras(client, base_url, sid)
@@ -213,5 +222,7 @@ async def sync_nvr(ip: str, port: int, username: str, password: str) -> Dict[str
                     cam["status"] = statuses[cam["channel"]]
 
             return {"ok": True, "cameras": cameras, "error": ""}
+        except Exception as e:
+            return {"ok": False, "cameras": [], "error": f"Error obteniendo cámaras: {e}"}
         finally:
             await dahua_logout(client, base_url, sid)
