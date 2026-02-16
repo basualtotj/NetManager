@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError as SAOperationalError
+from sqlalchemy import text
 import os
 
 # ============================================
@@ -23,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("netmanager")
 
 from database import (
-    init_db, get_db,
+    init_db, get_db, run_migrations, check_schema_ok, engine,
     Site, Building, Rack, Router, Switch, Recorder, PatchPanel, Camera,
     User, UserSite, NvrCredential, SyncLog,
     CameraSnapshot, CameraEvent
@@ -74,9 +76,29 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    run_migrations()
     db = next(get_db())
     ensure_admin_exists(db)
     db.close()
+    logger.info("NetManager API started — schema OK")
+
+
+# ============================================
+# GLOBAL ERROR HANDLER — Schema Drift Protection
+# ============================================
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(SAOperationalError)
+async def handle_db_operational_error(request: Request, exc: SAOperationalError):
+    """
+    Catch SQLite OperationalError (missing column, etc.) globally.
+    Return 503 to client, log full traceback server-side.
+    """
+    logger.error("DB OperationalError on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Servicio temporalmente no disponible — error de base de datos. Intente de nuevo en un momento."},
+    )
 
 
 # ============================================
@@ -1173,8 +1195,32 @@ def list_camera_events(site_id: int, limit: int = Query(default=100, le=500),
 # ============================================
 
 @app.get("/api/health", tags=["Admin"])
-def health():
-    return {"status": "ok", "version": "1.0.0"}
+def health(db: Session = Depends(get_db)):
+    """
+    Health check: API + DB connection + schema validation.
+    Returns 200 if all OK, 503 if DB or schema is broken.
+    """
+    result = {"api": "ok", "version": "1.1.0"}
+
+    # DB connectivity
+    try:
+        db.execute(text("SELECT 1"))
+        result["db"] = "ok"
+    except Exception as e:
+        logger.error("Health check DB fail: %s", e)
+        result["db"] = "error"
+        result["db_error"] = str(e)
+        from fastapi.responses import JSONResponse as _JR
+        return _JR(status_code=503, content=result)
+
+    # Schema validation
+    schema = check_schema_ok()
+    result["schema"] = "ok" if schema["ok"] else "drift"
+    if not schema["ok"]:
+        result["schema_missing"] = schema["missing"]
+        logger.warning("Health check schema drift: %s", schema["missing"])
+
+    return result
 
 
 # ============================================

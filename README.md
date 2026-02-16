@@ -92,3 +92,59 @@ La base de datos SQLite es un solo archivo `netmanager.db`. Para respaldo:
 ```bash
 cp netmanager.db netmanager_backup_$(date +%Y%m%d).db
 ```
+
+## Migración automática de schema (SQLite)
+
+### ¿Qué problema resuelve?
+SQLAlchemy's `create_all()` crea tablas nuevas, pero **NO agrega columnas**
+a tablas existentes. En producción (EasyPanel/Docker) la DB SQLite persiste
+entre deploys, así que columnas nuevas en el código causan:
+```
+OperationalError: no such column: sites.cctv_subnet
+```
+
+### ¿Cómo funciona?
+Al iniciar el servidor (`on_startup`), se ejecuta `run_migrations()` que:
+
+1. Detecta con `PRAGMA table_info()` si cada columna nueva ya existe
+2. Si falta, ejecuta `ALTER TABLE ... ADD COLUMN ...` de forma **idempotente**
+3. Luego llama `create_all()` para tablas completamente nuevas
+4. Loguea cada ALTER aplicado
+
+Columnas migradas automáticamente:
+- `sites.cctv_subnet`
+- `cameras.configured`, `cameras.status_config`, `cameras.status_real`,
+  `cameras.last_seen_at`, `cameras.offline_streak`
+
+Tablas creadas si no existen:
+- `camera_snapshots`, `camera_events`
+
+### Despliegue en EasyPanel
+**No se requiere ningún paso manual.** Al hacer redeploy:
+
+1. EasyPanel reconstruye el container con la nueva imagen
+2. El container arranca `uvicorn main:app`
+3. `on_startup()` ejecuta `run_migrations()` automáticamente
+4. La DB existente (en el volumen persistente) se actualiza in-place
+
+```bash
+# Verificar estado post-deploy:
+curl https://tu-dominio.easypanel.host/api/health
+# Respuesta esperada:
+# {"api":"ok","version":"1.1.0","db":"ok","schema":"ok"}
+```
+
+### Health Check
+```bash
+GET /api/health
+```
+Respuestas:
+- `200` — `{"api":"ok","db":"ok","schema":"ok"}` — todo OK
+- `503` — `{"api":"ok","db":"error",...}` — DB no conecta
+- `200` con `"schema":"drift"` — faltan columnas (migración no corrió)
+
+### Protección contra 500
+Si por cualquier razón la migración no corre y queda schema drift,
+**todas** las queries SQLite que fallen con `OperationalError` devuelven
+HTTP `503` (no 500) con un mensaje genérico al cliente. El traceback
+completo se loguea solo en el servidor.

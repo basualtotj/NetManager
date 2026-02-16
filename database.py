@@ -2,13 +2,16 @@
 NetManager — Database Models & Connection
 SQLite with SQLAlchemy ORM
 """
+import logging
 import os
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, Float,
-    DateTime, ForeignKey, Text, JSON, event
+    DateTime, ForeignKey, Text, JSON, event, text, inspect
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+logger = logging.getLogger("netmanager.db")
 
 _default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "netmanager.db")
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_default_db}")
@@ -244,6 +247,116 @@ class CameraEvent(Base):
 def init_db():
     """Create all tables"""
     Base.metadata.create_all(bind=engine)
+
+
+def _table_has_column(conn, table: str, column: str) -> bool:
+    """Check if a column exists in a SQLite table."""
+    result = conn.execute(text(f"PRAGMA table_info({table})"))
+    cols = {row[1] for row in result.fetchall()}
+    return column in cols
+
+
+def _table_exists(conn, table: str) -> bool:
+    """Check if a table exists in the database."""
+    result = conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=:t"
+    ), {"t": table})
+    return result.fetchone() is not None
+
+
+def run_migrations():
+    """
+    Idempotent SQLite schema migration — safe to call on every startup.
+    Adds any columns/tables that exist in the ORM models but are missing
+    from the live database.
+
+    WHY: SQLAlchemy's create_all() creates missing tables but does NOT
+    add columns to existing tables.  In production (EasyPanel / Docker)
+    the SQLite file persists across deploys, so new columns added in code
+    would cause "no such column" errors without explicit ALTER TABLE.
+    """
+    logger.info("Running schema migrations ...")
+    applied = 0
+
+    with engine.connect() as conn:
+        # ------------------------------------------------------------------
+        # sites table
+        # ------------------------------------------------------------------
+        if _table_exists(conn, "sites"):
+            _cols = [
+                ("cctv_subnet", "TEXT DEFAULT ''"),
+                ("network_segments", "TEXT DEFAULT '[]'"),
+            ]
+            for col_name, col_def in _cols:
+                if not _table_has_column(conn, "sites", col_name):
+                    conn.execute(text(
+                        f"ALTER TABLE sites ADD COLUMN {col_name} {col_def}"
+                    ))
+                    logger.info("  + sites.%s", col_name)
+                    applied += 1
+
+        # ------------------------------------------------------------------
+        # cameras table — hybrid monitoring columns
+        # ------------------------------------------------------------------
+        if _table_exists(conn, "cameras"):
+            _cols = [
+                ("configured",     "INTEGER DEFAULT 1"),
+                ("status_config",  "TEXT DEFAULT 'enabled'"),
+                ("status_real",    "TEXT DEFAULT 'unknown'"),
+                ("last_seen_at",   "TEXT"),           # DATETIME stored as TEXT in SQLite
+                ("offline_streak", "INTEGER DEFAULT 0"),
+            ]
+            for col_name, col_def in _cols:
+                if not _table_has_column(conn, "cameras", col_name):
+                    conn.execute(text(
+                        f"ALTER TABLE cameras ADD COLUMN {col_name} {col_def}"
+                    ))
+                    logger.info("  + cameras.%s", col_name)
+                    applied += 1
+
+        # ------------------------------------------------------------------
+        # New tables — create_all handles these but we log it for clarity
+        # ------------------------------------------------------------------
+        for tbl in ("camera_snapshots", "camera_events"):
+            if not _table_exists(conn, tbl):
+                logger.info("  + table %s (will be created by create_all)", tbl)
+
+        conn.commit()
+
+    # Now let create_all pick up any brand-new tables
+    Base.metadata.create_all(bind=engine)
+
+    logger.info("Schema migrations complete (%d ALTER(s) applied)", applied)
+
+
+def check_schema_ok() -> dict:
+    """
+    Quick check that critical columns exist.
+    Returns {"ok": True} or {"ok": False, "missing": [...]}.
+    """
+    missing = []
+    required = [
+        ("sites",   "cctv_subnet"),
+        ("cameras", "configured"),
+        ("cameras", "status_config"),
+        ("cameras", "status_real"),
+        ("cameras", "offline_streak"),
+        ("cameras", "last_seen_at"),
+    ]
+    required_tables = ["camera_snapshots", "camera_events"]
+
+    try:
+        with engine.connect() as conn:
+            for tbl, col in required:
+                if _table_exists(conn, tbl) and not _table_has_column(conn, tbl, col):
+                    missing.append(f"{tbl}.{col}")
+            for tbl in required_tables:
+                if not _table_exists(conn, tbl):
+                    missing.append(f"table:{tbl}")
+    except Exception as e:
+        return {"ok": False, "missing": [f"error: {e}"]}
+
+    return {"ok": len(missing) == 0, "missing": missing}
 
 
 def get_db():
