@@ -881,7 +881,7 @@ async def test_nvr_connection(cid: int, admin: User = Depends(require_admin), db
         return {"ok": False, "message": result["error"]}
 
 
-@app.post("/api/nvr-credentials/{cid}/preview", response_model=NvrSyncPreview, tags=["NVR Sync"])
+@app.post("/api/nvr-credentials/{cid}/preview", tags=["NVR Sync"])
 async def preview_nvr_sync(cid: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Connect to NVR, get cameras, and compare with existing DB. Returns preview without making changes."""
     cred = _get_or_404(db, NvrCredential, cid)
@@ -889,7 +889,10 @@ async def preview_nvr_sync(cid: int, admin: User = Depends(require_admin), db: S
     result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
 
     if not result["ok"]:
-        raise HTTPException(502, f"No se pudo conectar al NVR: {result['error']}")
+        cred.last_status = "error"
+        db.commit()
+        return {"ok": False, "error": result["error"], "credential_id": cid,
+                "cameras": [], "new_cameras": [], "existing_cameras": [], "updated_cameras": []}
 
     nvr_cameras = result["cameras"]
     # Get existing cameras for this site + recorder
@@ -932,14 +935,15 @@ async def preview_nvr_sync(cid: int, admin: User = Depends(require_admin), db: S
     cred.last_sync = _dt.utcnow()
     db.commit()
 
-    return NvrSyncPreview(
-        credential_id=cid,
-        nvr_label=cred.label,
-        cameras=[NvrCameraPreview(**nc) for nc in nvr_cameras],
-        new_cameras=new_cams,
-        existing_cameras=existing_cams,
-        updated_cameras=updated_cams,
-    )
+    return {
+        "ok": True,
+        "credential_id": cid,
+        "nvr_label": cred.label,
+        "cameras": [NvrCameraPreview(**nc).model_dump() for nc in nvr_cameras],
+        "new_cameras": [c.model_dump() for c in new_cams],
+        "existing_cameras": [c.model_dump() for c in existing_cams],
+        "updated_cameras": [c.model_dump() for c in updated_cams],
+    }
 
 
 @app.post("/api/nvr-credentials/{cid}/sync", response_model=NvrSyncResult, tags=["NVR Sync"])

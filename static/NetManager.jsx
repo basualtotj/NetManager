@@ -576,7 +576,7 @@ function StatCard({ label, value, color, icon, onClick }) {
 // ============================================
 // ADMIN PANEL — Users, Sites, Access
 // ============================================
-function AdminPanel({ authToken }) {
+function AdminPanel({ authToken, onSyncComplete }) {
   const [users, setUsers] = useState([]);
   const [sites, setSites] = useState([]);
   const [tab, setTab] = useState("users");
@@ -730,8 +730,8 @@ function AdminPanel({ authToken }) {
       const text = await r.text();
       try {
         const data = JSON.parse(text);
-        if (r.ok) { setNvrPreview(data); }
-        else { flash(data.detail || "Error al conectar al NVR"); }
+        if (data.ok) { setNvrPreview(data); }
+        else { flash(data.error || data.detail || "Error al conectar al NVR"); loadNvrCreds(nvrSiteId); }
       } catch { flash("Respuesta inesperada del servidor (no JSON)"); }
     } catch (e) { flash("Error de conexión al servidor: " + e.message); }
     setNvrSyncing(false);
@@ -747,7 +747,10 @@ function AdminPanel({ authToken }) {
       const text = await r.text();
       try {
         const data = JSON.parse(text);
-        if (data.ok) { flash(`✅ ${data.message}`); } else { flash(`❌ ${data.message || data.detail}`); }
+        if (data.ok) {
+          flash(`✅ ${data.message}`);
+          if ((data.cameras_added > 0 || data.cameras_updated > 0) && onSyncComplete) onSyncComplete();
+        } else { flash(`❌ ${data.message || data.detail}`); }
       } catch { flash("Respuesta inesperada del servidor"); }
       setNvrPreview(null); loadNvrCreds(nvrSiteId); loadSyncLogs(nvrSiteId);
     } catch (e) { flash("Error de conexión: " + e.message); }
@@ -1105,21 +1108,21 @@ function AdminPanel({ authToken }) {
               {/* Sync action buttons */}
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 {nvrPreview.new_cameras.length > 0 && (
-                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", true, false)} disabled={nvrSyncing}>
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync_cameras", true, false)} disabled={nvrSyncing}>
                     {nvrSyncing ? "⏳ Sincronizando..." : `➕ Agregar ${nvrPreview.new_cameras.length} nuevas`}
                   </Btn>
                 )}
                 {nvrPreview.updated_cameras.length > 0 && (
-                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", false, true)} disabled={nvrSyncing}>
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync_cameras", false, true)} disabled={nvrSyncing}>
                     {nvrSyncing ? "⏳..." : `🔄 Actualizar ${nvrPreview.updated_cameras.length}`}
                   </Btn>
                 )}
                 {(nvrPreview.new_cameras.length > 0 || nvrPreview.updated_cameras.length > 0) && (
-                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", true, true)} disabled={nvrSyncing}>
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "full_sync", true, true)} disabled={nvrSyncing}>
                     {nvrSyncing ? "⏳..." : "⚡ Sincronizar Todo"}
                   </Btn>
                 )}
-                <Btn variant="ghost" onClick={() => executeNvrSync(nvrPreview.credential_id, "status_only", false, false)} disabled={nvrSyncing}>
+                <Btn variant="ghost" onClick={() => executeNvrSync(nvrPreview.credential_id, "update_status", false, false)} disabled={nvrSyncing}>
                   {nvrSyncing ? "⏳..." : "📊 Solo actualizar estados"}
                 </Btn>
               </div>
@@ -2720,7 +2723,7 @@ function App() {
 
           {/* ============ ADMIN PANEL ============ */}
           {activeSection === "admin" && authUser?.role === "admin" && (
-            <AdminPanel authToken={authToken} />
+            <AdminPanel authToken={authToken} onSyncComplete={() => { if (siteId) handleSelectSite(siteId); }} />
           )}
         </div>
       </div>
