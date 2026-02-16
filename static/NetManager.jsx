@@ -743,14 +743,14 @@ function App() {
     setData({ ...DEFAULT_DATA });
   };
 
-  // Show login / site selector / app
-  if (authScreen === "login") return <LoginScreen onLogin={handleLogin} />;
-  if (authScreen === "selectSite") return <SiteSelector user={authUser} onSelect={handleSelectSite} onLogout={handleLogout} />;
-  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", color: "#94a3b8", fontFamily: "'Segoe UI', sans-serif" }}>Cargando sitio...</div>;
-
   const update = useCallback((key, value) => {
     setData(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  // Show login / site selector / app — AFTER all hooks
+  if (authScreen === "login") return <LoginScreen onLogin={handleLogin} />;
+  if (authScreen === "selectSite") return <SiteSelector user={authUser} onSelect={handleSelectSite} onLogout={handleLogout} />;
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", color: "#94a3b8", fontFamily: "'Segoe UI', sans-serif" }}>Cargando sitio...</div>;
 
   // CRUD Helpers (API-aware)
   const addItem = async (key, item) => {

@@ -10,7 +10,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/netmanager.db")
+_default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "netmanager.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_default_db}")
 
 # Ensure data directory exists for Docker volume
 if DATABASE_URL.startswith("sqlite:////"):
