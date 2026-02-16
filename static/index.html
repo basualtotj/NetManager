@@ -30,27 +30,38 @@
     </div>
   </div>
 
-  <script>
-    // Point API client to same origin
-    window.NETMANAGER_API = "";
-  </script>
-
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script type="text/babel" data-type="module" src="/static/NetManager.jsx"></script>
-  <script type="text/babel">
-    // Wait for module to load then render
-    const checkAndRender = () => {
-      const mod = window.__NetManagerApp;
-      if (mod) {
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(React.createElement(mod));
-      } else {
-        setTimeout(checkAndRender, 100);
-      }
-    };
-    checkAndRender();
+
+  <script>
+    window.NETMANAGER_API = "";
+
+    fetch('/static/NetManager.jsx')
+      .then(r => r.text())
+      .then(jsxSource => {
+        try {
+          const compiled = Babel.transform(jsxSource, { presets: ['react'] }).code;
+          const script = document.createElement('script');
+          script.textContent = compiled;
+          document.body.appendChild(script);
+          setTimeout(() => {
+            const AppComponent = window.__NetManagerApp;
+            if (AppComponent) {
+              const root = ReactDOM.createRoot(document.getElementById('root'));
+              root.render(React.createElement(AppComponent));
+            } else {
+              document.getElementById('root').innerHTML = '<div style="color:#f87171;padding:40px;font-family:sans-serif">Error: App not found after compilation</div>';
+            }
+          }, 100);
+        } catch (err) {
+          console.error('Babel error:', err);
+          document.getElementById('root').innerHTML = '<div style="color:#f87171;padding:40px;font-family:sans-serif;white-space:pre-wrap">Compilation error:\n' + err.message + '</div>';
+        }
+      })
+      .catch(err => {
+        document.getElementById('root').innerHTML = '<div style="color:#f87171;padding:40px;font-family:sans-serif">Load error: ' + err.message + '</div>';
+      });
   </script>
 </body>
 </html>
