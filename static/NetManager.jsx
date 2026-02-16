@@ -147,39 +147,39 @@ const genId = () => Math.random().toString(36).substring(2, 10);
 
 // ============================================
 // API CLIENT
-// Connects to FastAPI backend when available,
-// falls back to local state (demo mode)
+// Connects to FastAPI backend with JWT auth
 // ============================================
 const API_BASE = window.NETMANAGER_API || "";
 
 const api = {
-  _available: null,
-  async check() {
-    if (this._available !== null) return this._available;
-    if (!API_BASE) { this._available = false; return false; }
-    try {
-      const r = await fetch(`${API_BASE}/api/health`, { signal: AbortSignal.timeout(2000) });
-      this._available = r.ok;
-    } catch { this._available = false; }
-    return this._available;
+  _token: null,
+  setToken(t) { this._token = t; },
+  _headers() {
+    const h = { "Content-Type": "application/json" };
+    if (this._token) h["Authorization"] = `Bearer ${this._token}`;
+    return h;
   },
   async get(path) {
-    const r = await fetch(`${API_BASE}${path}`);
+    const r = await fetch(`${API_BASE}${path}`, { headers: this._headers() });
+    if (r.status === 401) throw new Error("UNAUTHORIZED");
     if (!r.ok) throw new Error(`GET ${path}: ${r.status}`);
     return r.json();
   },
   async post(path, body) {
-    const r = await fetch(`${API_BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(`${API_BASE}${path}`, { method: "POST", headers: this._headers(), body: JSON.stringify(body) });
+    if (r.status === 401) throw new Error("UNAUTHORIZED");
     if (!r.ok) throw new Error(`POST ${path}: ${r.status}`);
     return r.json();
   },
   async put(path, body) {
-    const r = await fetch(`${API_BASE}${path}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(`${API_BASE}${path}`, { method: "PUT", headers: this._headers(), body: JSON.stringify(body) });
+    if (r.status === 401) throw new Error("UNAUTHORIZED");
     if (!r.ok) throw new Error(`PUT ${path}: ${r.status}`);
     return r.json();
   },
   async del(path) {
-    const r = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+    const r = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers: this._headers() });
+    if (r.status === 401) throw new Error("UNAUTHORIZED");
     if (!r.ok) throw new Error(`DELETE ${path}: ${r.status}`);
     return r.json();
   }
@@ -570,16 +570,130 @@ function StatCard({ label, value, color, icon, onClick }) {
 }
 
 // ============================================
+// LOGIN SCREEN
+// ============================================
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!username || !password) { setError("Ingresa usuario y contraseña"); return; }
+    setLoading(true); setError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setError(err.detail || "Error de autenticación");
+        return;
+      }
+      const data = await res.json();
+      onLogin(data.token, data.user);
+    } catch (e) {
+      setError("Error de conexión con el servidor");
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", fontFamily: "'Segoe UI', sans-serif" }}>
+      <div style={{ width: "360px", background: "#141c2b", border: "1px solid #1e293b", borderRadius: "12px", padding: "32px" }}>
+        <div style={{ textAlign: "center", marginBottom: "24px" }}>
+          <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "48px", height: "48px", borderRadius: "10px", background: "linear-gradient(135deg, #3b82f6, #8b5cf6)", marginBottom: "12px", fontSize: "18px", fontWeight: 800, color: "#fff" }}>NM</div>
+          <div style={{ fontSize: "18px", fontWeight: 700, color: "#e2e8f0" }}>NetManager</div>
+          <div style={{ fontSize: "11px", color: "#64748b" }}>CCTV & Network Infrastructure</div>
+        </div>
+        <div style={{ marginBottom: "14px" }}>
+          <label style={{ fontSize: "11px", color: "#94a3b8", display: "block", marginBottom: "4px" }}>Usuario</label>
+          <input value={username} onChange={e => setUsername(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()}
+            style={{ width: "100%", padding: "10px 12px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#e2e8f0", fontSize: "13px", outline: "none" }}
+            placeholder="admin" autoFocus />
+        </div>
+        <div style={{ marginBottom: "20px" }}>
+          <label style={{ fontSize: "11px", color: "#94a3b8", display: "block", marginBottom: "4px" }}>Contraseña</label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()}
+            style={{ width: "100%", padding: "10px 12px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#e2e8f0", fontSize: "13px", outline: "none" }}
+            placeholder="••••••••" />
+        </div>
+        {error && <div style={{ background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px", fontSize: "12px", color: "#f87171" }}>{error}</div>}
+        <button onClick={handleLogin} disabled={loading}
+          style={{ width: "100%", padding: "11px", background: loading ? "#334155" : "#3b82f6", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: 600, cursor: loading ? "wait" : "pointer" }}>
+          {loading ? "Conectando..." : "Ingresar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================
+// SITE SELECTOR
+// ============================================
+function SiteSelector({ user, onSelect, onLogout }) {
+  const [sites, setSites] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get("/api/sites").then(s => { setSites(s); setLoading(false); }).catch(() => setLoading(false));
+  }, []);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", fontFamily: "'Segoe UI', sans-serif" }}>
+      <div style={{ width: "480px", background: "#141c2b", border: "1px solid #1e293b", borderRadius: "12px", padding: "32px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <div>
+            <div style={{ fontSize: "16px", fontWeight: 700, color: "#e2e8f0" }}>Seleccionar Sitio</div>
+            <div style={{ fontSize: "11px", color: "#64748b" }}>Hola, {user.display_name || user.username} ({user.role})</div>
+          </div>
+          <button onClick={onLogout} style={{ padding: "6px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: "6px", color: "#94a3b8", fontSize: "11px", cursor: "pointer" }}>Cerrar sesión</button>
+        </div>
+        {loading ? (
+          <div style={{ textAlign: "center", padding: "30px", color: "#64748b" }}>Cargando sitios...</div>
+        ) : sites.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "30px" }}>
+            <div style={{ color: "#64748b", marginBottom: "12px" }}>No hay sitios disponibles</div>
+            {user.role === "admin" && <button onClick={async () => {
+              try { await api.post("/api/seed/donbosco"); const s = await api.get("/api/sites"); setSites(s); } catch {}
+            }} style={{ padding: "8px 16px", background: "#3b82f6", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>Cargar datos Don Bosco</button>}
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {sites.map(s => (
+              <button key={s.id} onClick={() => onSelect(s.id)}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "#0f172a", border: "1px solid #1e293b", borderRadius: "8px", cursor: "pointer", textAlign: "left", transition: "border-color 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = "#3b82f6"}
+                onMouseLeave={e => e.currentTarget.style.borderColor = "#1e293b"}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0" }}>{s.name}</div>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>{s.address}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: "18px", fontWeight: 700, color: "#3b82f6" }}>{s.camera_count}</div>
+                  <div style={{ fontSize: "9px", color: "#64748b" }}>cámaras</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================
 // MAIN APP
 // ============================================
 function App() {
-  const [data, setData] = useState(() => {
-    try {
-      const saved = null;
-      return saved ? JSON.parse(saved) : { ...DEFAULT_DATA };
-    } catch { return { ...DEFAULT_DATA }; }
-  });
+  // Auth state
+  const [authUser, setAuthUser] = useState(null);
+  const [authToken, setAuthToken] = useState(null);
+  const [authScreen, setAuthScreen] = useState("login"); // login, selectSite, app
 
+  const [data, setData] = useState(() => ({ ...DEFAULT_DATA }));
   const [activeSection, setActiveSection] = useState("dashboard");
   const [modal, setModal] = useState({ open: false, type: null, item: null });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -588,28 +702,21 @@ function App() {
   const [topoFullscreen, setTopoFullscreen] = useState(false);
   const [reportHTML, setReportHTML] = useState(null);
   const printFrameRef = useRef(null);
-  const [apiMode, setApiMode] = useState(false);
+  const [apiMode, setApiMode] = useState(true);
   const [siteId, setSiteId] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Check API availability on mount
-  useEffect(() => {
-    api.check().then(avail => {
-      setApiMode(avail);
-      if (avail) loadFromAPI();
-    });
-  }, []);
+  const handleLogin = (token, user) => {
+    api.setToken(token);
+    setAuthToken(token);
+    setAuthUser(user);
+    setAuthScreen("selectSite");
+  };
 
-  const loadFromAPI = async () => {
+  const handleSelectSite = async (sid) => {
+    setSiteId(sid);
+    setLoading(true);
     try {
-      setLoading(true);
-      const sites = await api.get("/api/sites");
-      if (sites.length === 0) {
-        await api.post("/api/seed/donbosco");
-        return loadFromAPI();
-      }
-      const sid = sites[0].id;
-      setSiteId(sid);
       const full = await api.get(`/api/sites/${sid}/full`);
       setData({
         site: { name: full.site.name, address: full.site.address, contact: full.site.contact, phone: full.site.phone, email: full.site.email },
@@ -621,13 +728,25 @@ function App() {
         cameras: full.cameras.map(c => toFrontend("cameras", c)),
         patchPanels: full.patch_panels.map(p => toFrontend("patchPanels", p)),
       });
+      setAuthScreen("app");
     } catch (e) {
-      console.error("API load failed:", e);
-      setApiMode(false);
-    } finally {
-      setLoading(false);
-    }
+      console.error("Load site failed:", e);
+    } finally { setLoading(false); }
   };
+
+  const handleLogout = () => {
+    api.setToken(null);
+    setAuthToken(null);
+    setAuthUser(null);
+    setSiteId(null);
+    setAuthScreen("login");
+    setData({ ...DEFAULT_DATA });
+  };
+
+  // Show login / site selector / app
+  if (authScreen === "login") return <LoginScreen onLogin={handleLogin} />;
+  if (authScreen === "selectSite") return <SiteSelector user={authUser} onSelect={handleSelectSite} onLogout={handleLogout} />;
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", color: "#94a3b8", fontFamily: "'Segoe UI', sans-serif" }}>Cargando sitio...</div>;
 
   const update = useCallback((key, value) => {
     setData(prev => ({ ...prev, [key]: value }));
@@ -1079,8 +1198,8 @@ function App() {
               <div style={{ fontSize: "13px", fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap" }}>NetManager</div>
               <div style={{ fontSize: "10px", color: "#475569", whiteSpace: "nowrap" }}>CCTV & Network</div>
               <div style={{ fontSize: "8px", marginTop: "3px", display: "flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: apiMode ? "#10b981" : "#f59e0b" }} />
-                <span style={{ color: apiMode ? "#10b981" : "#f59e0b" }}>{apiMode ? "API" : "Local"}</span>
+                <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: "#10b981" }} />
+                <span style={{ color: "#10b981" }}>{authUser?.username}</span>
               </div>
             </div>
           )}
@@ -1105,10 +1224,16 @@ function App() {
           ))}
         </nav>
 
-        {/* Site name footer */}
+        {/* Site name footer + user actions */}
         {!sidebarCollapsed && (
           <div style={{ padding: "12px 16px", borderTop: "1px solid #1a2235", fontSize: "10px", color: "#334155", lineHeight: 1.4 }}>
-            {data.site.name}
+            <div style={{ marginBottom: "8px", color: "#64748b" }}>{data.site.name}</div>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button onClick={() => setAuthScreen("selectSite")}
+                style={{ flex: 1, padding: "5px", background: "#1e293b", border: "1px solid #334155", borderRadius: "4px", color: "#94a3b8", fontSize: "9px", cursor: "pointer" }}>Cambiar sitio</button>
+              <button onClick={handleLogout}
+                style={{ flex: 1, padding: "5px", background: "#1e293b", border: "1px solid #334155", borderRadius: "4px", color: "#f87171", fontSize: "9px", cursor: "pointer" }}>Salir</button>
+            </div>
           </div>
         )}
       </div>

@@ -1,0 +1,13 @@
+# Ignore the local push script
+push_and_commit.sh
+
+# Common Python artifacts
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Environment
+venv/
+.env
