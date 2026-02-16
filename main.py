@@ -14,7 +14,7 @@ import os
 from database import (
     init_db, get_db,
     Site, Building, Rack, Router, Switch, Recorder, PatchPanel, Camera,
-    User, UserSite
+    User, UserSite, NvrCredential, SyncLog
 )
 from schemas import (
     SiteCreate, SiteUpdate, SiteOut,
@@ -28,7 +28,10 @@ from schemas import (
     DashboardStats, SiteFullExport,
     LoginRequest, LoginResponse, UserCreate, UserUpdate, UserOut,
     UserSiteAssign, SiteListItem,
-    NetworkSegmentItem, NetworkSegmentsUpdate, NetworkSegmentsOut
+    NetworkSegmentItem, NetworkSegmentsUpdate, NetworkSegmentsOut,
+    NvrCredentialCreate, NvrCredentialUpdate, NvrCredentialOut,
+    NvrSyncPreview, NvrSyncRequest, NvrSyncResult, SyncLogOut,
+    NvrCameraPreview
 )
 from auth import (
     hash_password, verify_password, create_token,
@@ -794,6 +797,263 @@ def seed_donbosco(db: Session = Depends(get_db)):
 
     db.commit()
     return {"ok": True, "site_id": site.id, "msg": "Don Bosco seeded successfully"}
+
+
+# ============================================
+# NVR CREDENTIALS (admin only)
+# ============================================
+
+from crypto_utils import encrypt_password, decrypt_password
+from dahua_rpc import sync_nvr as _sync_nvr_rpc
+from datetime import datetime as _dt
+import asyncio
+
+
+@app.post("/api/nvr-credentials", response_model=NvrCredentialOut, tags=["NVR Sync"])
+def create_nvr_credential(data: NvrCredentialCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Add NVR credentials for a site (admin only). Password is encrypted."""
+    _get_or_404(db, Site, data.site_id)
+    cred = NvrCredential(
+        site_id=data.site_id,
+        recorder_id=data.recorder_id,
+        label=data.label or f"NVR {data.ip}",
+        ip=data.ip,
+        port=data.port,
+        username=data.username,
+        password_enc=encrypt_password(data.password),
+        active=True,
+    )
+    db.add(cred)
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+@app.get("/api/sites/{site_id}/nvr-credentials", response_model=List[NvrCredentialOut], tags=["NVR Sync"])
+def list_nvr_credentials(site_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """List NVR credentials for a site (admin only). Passwords are NOT returned."""
+    return db.query(NvrCredential).filter_by(site_id=site_id).all()
+
+
+@app.put("/api/nvr-credentials/{cid}", response_model=NvrCredentialOut, tags=["NVR Sync"])
+def update_nvr_credential(cid: int, data: NvrCredentialUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Update NVR credential (admin only)."""
+    cred = _get_or_404(db, NvrCredential, cid)
+    if data.label is not None:
+        cred.label = data.label
+    if data.ip is not None:
+        cred.ip = data.ip
+    if data.port is not None:
+        cred.port = data.port
+    if data.username is not None:
+        cred.username = data.username
+    if data.password is not None and data.password:
+        cred.password_enc = encrypt_password(data.password)
+    if data.active is not None:
+        cred.active = data.active
+    if data.recorder_id is not None:
+        cred.recorder_id = data.recorder_id
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+@app.delete("/api/nvr-credentials/{cid}", tags=["NVR Sync"])
+def delete_nvr_credential(cid: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Delete NVR credential (admin only)."""
+    return _delete(db, NvrCredential, cid)
+
+
+@app.post("/api/nvr-credentials/{cid}/test", tags=["NVR Sync"])
+async def test_nvr_connection(cid: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Test NVR connection without syncing."""
+    cred = _get_or_404(db, NvrCredential, cid)
+    password = decrypt_password(cred.password_enc)
+    result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
+    if result["ok"]:
+        cred.last_status = "ok"
+        cred.last_sync = _dt.utcnow()
+        db.commit()
+        return {"ok": True, "message": f"Conexión exitosa — {len(result['cameras'])} cámaras detectadas"}
+    else:
+        cred.last_status = "error"
+        db.commit()
+        return {"ok": False, "message": result["error"]}
+
+
+@app.post("/api/nvr-credentials/{cid}/preview", response_model=NvrSyncPreview, tags=["NVR Sync"])
+async def preview_nvr_sync(cid: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Connect to NVR, get cameras, and compare with existing DB. Returns preview without making changes."""
+    cred = _get_or_404(db, NvrCredential, cid)
+    password = decrypt_password(cred.password_enc)
+    result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
+
+    if not result["ok"]:
+        raise HTTPException(502, f"No se pudo conectar al NVR: {result['error']}")
+
+    nvr_cameras = result["cameras"]
+    # Get existing cameras for this site + recorder
+    existing_db = db.query(Camera).filter_by(site_id=cred.site_id)
+    if cred.recorder_id:
+        existing_db = existing_db.filter_by(recorder_id=cred.recorder_id)
+    existing = existing_db.all()
+
+    # Match by channel (within same recorder) or by IP
+    existing_by_ch = {c.channel: c for c in existing if c.channel}
+    existing_by_ip = {c.ip: c for c in existing if c.ip}
+
+    new_cams = []
+    existing_cams = []
+    updated_cams = []
+
+    for nc in nvr_cameras:
+        preview = NvrCameraPreview(
+            channel=nc["channel"], name=nc["name"], ip=nc["ip"],
+            model=nc["model"], serial=nc["serial"], mac=nc["mac"],
+            status=nc.get("status", "online")
+        )
+        match = existing_by_ch.get(nc["channel"]) or existing_by_ip.get(nc["ip"])
+        if match:
+            existing_cams.append(preview)
+            # Check if any field differs
+            changed = (
+                (nc["model"] and nc["model"] != match.model) or
+                (nc["serial"] and nc["serial"] != match.serial) or
+                (nc["mac"] and nc["mac"] != match.mac) or
+                (nc["name"] and nc["name"] != match.name) or
+                (nc["ip"] and nc["ip"] != match.ip)
+            )
+            if changed:
+                updated_cams.append(preview)
+        else:
+            new_cams.append(preview)
+
+    cred.last_status = "ok"
+    cred.last_sync = _dt.utcnow()
+    db.commit()
+
+    return NvrSyncPreview(
+        credential_id=cid,
+        nvr_label=cred.label,
+        cameras=[NvrCameraPreview(**nc) for nc in nvr_cameras],
+        new_cameras=new_cams,
+        existing_cameras=existing_cams,
+        updated_cameras=updated_cams,
+    )
+
+
+@app.post("/api/nvr-credentials/{cid}/sync", response_model=NvrSyncResult, tags=["NVR Sync"])
+async def execute_nvr_sync(cid: int, req: NvrSyncRequest,
+                           admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Execute NVR sync: add new cameras and/or update existing ones."""
+    cred = _get_or_404(db, NvrCredential, cid)
+    password = decrypt_password(cred.password_enc)
+    result = await _sync_nvr_rpc(cred.ip, cred.port, cred.username, password)
+
+    log = SyncLog(
+        credential_id=cid, site_id=cred.site_id,
+        user_id=admin.id, action=req.action,
+    )
+
+    if not result["ok"]:
+        log.status = "error"
+        log.error_message = result["error"]
+        db.add(log)
+        cred.last_status = "error"
+        db.commit()
+        return NvrSyncResult(ok=False, action=req.action, message=result["error"])
+
+    nvr_cameras = result["cameras"]
+    log.cameras_found = len(nvr_cameras)
+
+    # Get existing cameras
+    existing_q = db.query(Camera).filter_by(site_id=cred.site_id)
+    if cred.recorder_id:
+        existing_q = existing_q.filter_by(recorder_id=cred.recorder_id)
+    existing = existing_q.all()
+    existing_by_ch = {c.channel: c for c in existing if c.channel}
+    existing_by_ip = {c.ip: c for c in existing if c.ip}
+
+    added = 0
+    updated = 0
+    online_count = 0
+    offline_count = 0
+
+    for nc in nvr_cameras:
+        status = nc.get("status", "online")
+        if status == "online":
+            online_count += 1
+        else:
+            offline_count += 1
+
+        match = existing_by_ch.get(nc["channel"]) or existing_by_ip.get(nc["ip"])
+
+        if match:
+            # Update existing camera
+            if req.update_existing and req.action in ("sync_cameras", "full_sync"):
+                changed = False
+                if nc["model"] and nc["model"] != match.model:
+                    match.model = nc["model"]; changed = True
+                if nc["serial"] and nc["serial"] != match.serial:
+                    match.serial = nc["serial"]; changed = True
+                if nc["mac"] and nc["mac"] != match.mac:
+                    match.mac = nc["mac"]; changed = True
+                if nc["name"] and nc["name"] != match.name:
+                    match.name = nc["name"]; changed = True
+                if nc["ip"] and nc["ip"] != match.ip:
+                    match.ip = nc["ip"]; changed = True
+                if changed:
+                    updated += 1
+            # Always update status
+            if req.action in ("update_status", "full_sync"):
+                match.status = status
+        else:
+            # Add new camera
+            if req.add_new and req.action in ("sync_cameras", "full_sync"):
+                cam = Camera(
+                    site_id=cred.site_id,
+                    recorder_id=cred.recorder_id,
+                    channel=nc["channel"],
+                    name=nc["name"],
+                    ip=nc["ip"],
+                    model=nc["model"],
+                    serial=nc["serial"],
+                    mac=nc["mac"],
+                    cam_type="ip-net" if nc["ip"] else "analog",
+                    status=status,
+                )
+                db.add(cam)
+                added += 1
+
+    log.cameras_added = added
+    log.cameras_updated = updated
+    log.cameras_online = online_count
+    log.cameras_offline = offline_count
+    log.status = "ok"
+    db.add(log)
+    cred.last_status = "ok"
+    cred.last_sync = _dt.utcnow()
+    db.commit()
+
+    msg_parts = []
+    if added: msg_parts.append(f"{added} cámaras agregadas")
+    if updated: msg_parts.append(f"{updated} actualizadas")
+    msg_parts.append(f"{online_count} online, {offline_count} offline")
+
+    return NvrSyncResult(
+        ok=True, action=req.action,
+        cameras_found=len(nvr_cameras), cameras_added=added,
+        cameras_updated=updated, cameras_online=online_count,
+        cameras_offline=offline_count,
+        message=" — ".join(msg_parts),
+    )
+
+
+@app.get("/api/sites/{site_id}/sync-logs", response_model=List[SyncLogOut], tags=["NVR Sync"])
+def list_sync_logs(site_id: int, limit: int = Query(default=50, le=200),
+                   admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Get sync history for a site."""
+    return db.query(SyncLog).filter_by(site_id=site_id).order_by(SyncLog.created_at.desc()).limit(limit).all()
 
 
 # ============================================

@@ -307,3 +307,91 @@ class NetworkSegmentsUpdate(BaseModel):
 class NetworkSegmentsOut(BaseModel):
     """Combined auto-detected + manual segments"""
     segments: List[NetworkSegmentItem] = []
+
+
+# ============================================
+# NVR CREDENTIALS & SYNC
+# ============================================
+
+class NvrCredentialCreate(BaseModel):
+    site_id: int
+    recorder_id: Optional[int] = None
+    label: str = ""
+    ip: str
+    port: int = 80
+    username: str = "admin"
+    password: str  # plain — encrypted on server side
+
+class NvrCredentialUpdate(BaseModel):
+    label: Optional[str] = None
+    ip: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None   # optional — only update if provided
+    active: Optional[bool] = None
+    recorder_id: Optional[int] = None
+
+class NvrCredentialOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    site_id: int
+    recorder_id: Optional[int] = None
+    label: str = ""
+    ip: str
+    port: int = 80
+    username: str = "admin"
+    active: bool = True
+    last_sync: Optional[datetime] = None
+    last_status: str = ""
+    created_at: Optional[datetime] = None
+
+class NvrCameraPreview(BaseModel):
+    """Camera data extracted from NVR RPC"""
+    channel: int
+    name: str = ""
+    ip: str = ""
+    model: str = ""
+    serial: str = ""
+    mac: str = ""
+    status: str = "online"
+
+class NvrSyncPreview(BaseModel):
+    """Preview before committing sync"""
+    credential_id: int
+    nvr_label: str = ""
+    cameras: List[NvrCameraPreview] = []
+    new_cameras: List[NvrCameraPreview] = []
+    existing_cameras: List[NvrCameraPreview] = []
+    updated_cameras: List[NvrCameraPreview] = []
+
+class NvrSyncRequest(BaseModel):
+    credential_id: int
+    action: str = "sync_cameras"  # sync_cameras, update_status, full_sync
+    add_new: bool = True          # whether to add new cameras
+    update_existing: bool = True  # whether to update existing camera info
+
+class NvrSyncResult(BaseModel):
+    ok: bool
+    action: str = ""
+    cameras_found: int = 0
+    cameras_added: int = 0
+    cameras_updated: int = 0
+    cameras_online: int = 0
+    cameras_offline: int = 0
+    message: str = ""
+
+class SyncLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    credential_id: int
+    site_id: int
+    user_id: Optional[int] = None
+    action: str = ""
+    status: str = ""
+    cameras_found: int = 0
+    cameras_added: int = 0
+    cameras_updated: int = 0
+    cameras_online: int = 0
+    cameras_offline: int = 0
+    error_message: str = ""
+    created_at: Optional[datetime] = None

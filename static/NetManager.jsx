@@ -7,8 +7,8 @@ const DEFAULT_SITE = {
   name: "Colegio Técnico Industrial Don Bosco",
   address: "Antofagasta, Chile",
   contact: "Fernando Flores",
-  phone: "+56 9 XXXX XXXX",
-  email: "admin@donbosco.cl",
+  phone: "+56 963067169",
+  email: "fernando@redesycctv.cl",
   networkSegments: [],
 };
 
@@ -586,6 +586,18 @@ function AdminPanel({ authToken }) {
   const [newSite, setNewSite] = useState(null);
   const [msg, setMsg] = useState("");
 
+  // NVR Sync state
+  const [nvrCreds, setNvrCreds] = useState([]);
+  const [nvrSiteId, setNvrSiteId] = useState(null);
+  const [nvrNewCred, setNvrNewCred] = useState(null);
+  const [nvrEditCred, setNvrEditCred] = useState(null);
+  const [nvrPreview, setNvrPreview] = useState(null);
+  const [nvrSyncing, setNvrSyncing] = useState(false);
+  const [nvrTesting, setNvrTesting] = useState(null);
+  const [syncLogs, setSyncLogs] = useState([]);
+  const [showLogs, setShowLogs] = useState(false);
+  const [recorders, setRecorders] = useState([]);
+
   const hdrs = { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
 
   const load = async () => {
@@ -651,6 +663,86 @@ function AdminPanel({ authToken }) {
     flash("Sitio eliminado"); load();
   };
 
+  // ---- NVR SYNC FUNCTIONS ----
+  const loadNvrCreds = async (siteId) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/sites/${siteId}/nvr-credentials`, { headers: hdrs });
+      if (r.ok) setNvrCreds(await r.json());
+      const rRec = await fetch(`${API_BASE}/api/sites/${siteId}/recorders`, { headers: hdrs });
+      if (rRec.ok) setRecorders(await rRec.json());
+    } catch {}
+  };
+
+  const loadSyncLogs = async (siteId) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/sites/${siteId}/sync-logs?limit=20`, { headers: hdrs });
+      if (r.ok) setSyncLogs(await r.json());
+    } catch {}
+  };
+
+  const saveNvrCred = async (cred) => {
+    try {
+      if (cred.id) {
+        const body = {};
+        if (cred.label !== undefined) body.label = cred.label;
+        if (cred.ip !== undefined) body.ip = cred.ip;
+        if (cred.port !== undefined) body.port = parseInt(cred.port) || 80;
+        if (cred.username !== undefined) body.username = cred.username;
+        if (cred.newPassword) body.password = cred.newPassword;
+        if (cred.active !== undefined) body.active = cred.active;
+        if (cred.recorder_id !== undefined) body.recorder_id = cred.recorder_id || null;
+        await fetch(`${API_BASE}/api/nvr-credentials/${cred.id}`, { method: "PUT", headers: hdrs, body: JSON.stringify(body) });
+        flash("Credencial actualizada");
+      } else {
+        const body = { site_id: nvrSiteId, label: cred.label, ip: cred.ip, port: parseInt(cred.port) || 80, username: cred.username, password: cred.password, recorder_id: cred.recorder_id || null };
+        const res = await fetch(`${API_BASE}/api/nvr-credentials`, { method: "POST", headers: hdrs, body: JSON.stringify(body) });
+        if (!res.ok) { const e = await res.json(); flash(e.detail || "Error"); return; }
+        flash("Credencial creada");
+      }
+      setNvrNewCred(null); setNvrEditCred(null); loadNvrCreds(nvrSiteId);
+    } catch (e) { flash("Error: " + e.message); }
+  };
+
+  const deleteNvrCred = async (cid) => {
+    if (!confirm("¿Eliminar esta credencial NVR?")) return;
+    await fetch(`${API_BASE}/api/nvr-credentials/${cid}`, { method: "DELETE", headers: hdrs });
+    flash("Credencial eliminada"); loadNvrCreds(nvrSiteId);
+  };
+
+  const testNvrConnection = async (cid) => {
+    setNvrTesting(cid);
+    try {
+      const r = await fetch(`${API_BASE}/api/nvr-credentials/${cid}/test`, { method: "POST", headers: hdrs });
+      const data = await r.json();
+      flash(data.message); loadNvrCreds(nvrSiteId);
+    } catch (e) { flash("Error de conexión: " + e.message); }
+    setNvrTesting(null);
+  };
+
+  const previewNvrSync = async (cid) => {
+    setNvrSyncing(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/nvr-credentials/${cid}/preview`, { method: "POST", headers: hdrs });
+      if (r.ok) { setNvrPreview(await r.json()); }
+      else { const e = await r.json(); flash(e.detail || "Error al conectar"); }
+    } catch (e) { flash("Error: " + e.message); }
+    setNvrSyncing(false);
+  };
+
+  const executeNvrSync = async (cid, action, addNew, updateExisting) => {
+    setNvrSyncing(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/nvr-credentials/${cid}/sync`, {
+        method: "POST", headers: hdrs,
+        body: JSON.stringify({ credential_id: cid, action, add_new: addNew, update_existing: updateExisting })
+      });
+      const data = await r.json();
+      if (data.ok) { flash(`✅ ${data.message}`); } else { flash(`❌ ${data.message}`); }
+      setNvrPreview(null); loadNvrCreds(nvrSiteId); loadSyncLogs(nvrSiteId);
+    } catch (e) { flash("Error: " + e.message); }
+    setNvrSyncing(false);
+  };
+
   const cardStyle = { background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px", marginBottom: "16px" };
   const tabBtn = (id, label) => (
     <button onClick={() => setTab(id)} style={{ padding: "8px 20px", background: tab === id ? "#2563eb" : "#1e293b", color: tab === id ? "#fff" : "#94a3b8", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>{label}</button>
@@ -663,6 +755,7 @@ function AdminPanel({ authToken }) {
       <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
         {tabBtn("users", "Usuarios")}
         {tabBtn("sites", "Sitios")}
+        {tabBtn("nvr", "🔄 Sincronizar NVR")}
       </div>
 
       {/* ---- USERS TAB ---- */}
@@ -820,6 +913,256 @@ function AdminPanel({ authToken }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ---- NVR SYNC TAB ---- */}
+      {tab === "nvr" && (
+        <div>
+          {/* Site selector */}
+          <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <label style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600 }}>Sitio:</label>
+            <select value={nvrSiteId || ""} onChange={e => { const v = parseInt(e.target.value); setNvrSiteId(v || null); if (v) { loadNvrCreds(v); loadSyncLogs(v); } else { setNvrCreds([]); setSyncLogs([]); } }}
+              style={{ background: "#0b1120", border: "1px solid #1e293b", borderRadius: "6px", padding: "6px 12px", color: "#e2e8f0", fontSize: "12px", minWidth: "200px" }}>
+              <option value="">— Selecciona un sitio —</option>
+              {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            {nvrSiteId && <Btn variant="primary" icon={Icons.plus} onClick={() => setNvrNewCred({ label: "", ip: "", port: 80, username: "admin", password: "", recorder_id: null })}>Nueva Credencial NVR</Btn>}
+          </div>
+
+          {!nvrSiteId && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#475569", fontSize: "13px" }}>Selecciona un sitio para gestionar las credenciales NVR</div>
+          )}
+
+          {/* New credential form */}
+          {nvrNewCred && nvrSiteId && (
+            <div style={cardStyle}>
+              <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>➕ Nueva Credencial NVR</h4>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                <Field label="Etiqueta" value={nvrNewCred.label} onChange={v => setNvrNewCred({ ...nvrNewCred, label: v })} placeholder="Ej: NVR Principal" required />
+                <Field label="IP / Host" value={nvrNewCred.ip} onChange={v => setNvrNewCred({ ...nvrNewCred, ip: v })} placeholder="192.168.1.100" required />
+                <Field label="Puerto" value={nvrNewCred.port} onChange={v => setNvrNewCred({ ...nvrNewCred, port: v })} placeholder="80" />
+                <Field label="Usuario" value={nvrNewCred.username} onChange={v => setNvrNewCred({ ...nvrNewCred, username: v })} required />
+                <Field label="Contraseña" value={nvrNewCred.password} onChange={v => setNvrNewCred({ ...nvrNewCred, password: v })} type="password" required />
+                <div style={{ marginBottom: "12px" }}>
+                  <label style={{ fontSize: "11px", color: "#94a3b8", display: "block", marginBottom: "4px" }}>Grabador asociado</label>
+                  <select value={nvrNewCred.recorder_id || ""} onChange={e => setNvrNewCred({ ...nvrNewCred, recorder_id: parseInt(e.target.value) || null })}
+                    style={{ width: "100%", background: "#0b1120", border: "1px solid #1e293b", borderRadius: "6px", padding: "7px 10px", color: "#e2e8f0", fontSize: "12px" }}>
+                    <option value="">— Sin asociar —</option>
+                    {recorders.map(r => <option key={r.id} value={r.id}>{r.name} ({r.ip || "sin IP"})</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <Btn variant="primary" onClick={() => saveNvrCred(nvrNewCred)}>Crear Credencial</Btn>
+                <Btn variant="secondary" onClick={() => setNvrNewCred(null)}>Cancelar</Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Credentials list */}
+          {nvrSiteId && nvrCreds.map(c => (
+            <div key={c.id} style={cardStyle}>
+              {nvrEditCred?.id === c.id ? (
+                <div>
+                  <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>✏️ Editar Credencial</h4>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                    <Field label="Etiqueta" value={nvrEditCred.label} onChange={v => setNvrEditCred({ ...nvrEditCred, label: v })} />
+                    <Field label="IP / Host" value={nvrEditCred.ip} onChange={v => setNvrEditCred({ ...nvrEditCred, ip: v })} />
+                    <Field label="Puerto" value={nvrEditCred.port} onChange={v => setNvrEditCred({ ...nvrEditCred, port: v })} />
+                    <Field label="Usuario" value={nvrEditCred.username} onChange={v => setNvrEditCred({ ...nvrEditCred, username: v })} />
+                    <Field label="Nueva Contraseña" value={nvrEditCred.newPassword || ""} onChange={v => setNvrEditCred({ ...nvrEditCred, newPassword: v })} type="password" placeholder="Dejar vacío para no cambiar" />
+                    <div style={{ marginBottom: "12px" }}>
+                      <label style={{ fontSize: "11px", color: "#94a3b8", display: "block", marginBottom: "4px" }}>Grabador asociado</label>
+                      <select value={nvrEditCred.recorder_id || ""} onChange={e => setNvrEditCred({ ...nvrEditCred, recorder_id: parseInt(e.target.value) || null })}
+                        style={{ width: "100%", background: "#0b1120", border: "1px solid #1e293b", borderRadius: "6px", padding: "7px 10px", color: "#e2e8f0", fontSize: "12px" }}>
+                        <option value="">— Sin asociar —</option>
+                        {recorders.map(r => <option key={r.id} value={r.id}>{r.name} ({r.ip || "sin IP"})</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <Btn variant="primary" onClick={() => saveNvrCred(nvrEditCred)}>Guardar</Btn>
+                    <Btn variant="secondary" onClick={() => setNvrEditCred(null)}>Cancelar</Btn>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+                  <div style={{ flex: 1, minWidth: "200px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                      <span style={{ fontSize: "14px", fontWeight: 700, color: "#e2e8f0" }}>{c.label || "Sin etiqueta"}</span>
+                      <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: 600,
+                        background: c.active ? "#0d3320" : "#3b1c1c", color: c.active ? "#4ade80" : "#f87171" }}>
+                        {c.active ? "Activo" : "Inactivo"}
+                      </span>
+                      {c.last_status && (
+                        <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: 600,
+                          background: c.last_status === "ok" ? "#0d3320" : "#3b1c1c", color: c.last_status === "ok" ? "#4ade80" : "#f87171" }}>
+                          {c.last_status === "ok" ? "✅ Conectado" : "❌ " + c.last_status}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>
+                      {c.ip}:{c.port} · usuario: {c.username}
+                      {c.last_sync && <span> · última sync: {new Date(c.last_sync).toLocaleString()}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    <Btn variant="ghost" size="sm" onClick={() => testNvrConnection(c.id)} disabled={nvrTesting === c.id}>
+                      {nvrTesting === c.id ? "⏳ Probando..." : "🔌 Probar"}
+                    </Btn>
+                    <Btn variant="primary" size="sm" onClick={() => previewNvrSync(c.id)} disabled={nvrSyncing}>
+                      {nvrSyncing ? "⏳..." : "👁 Vista Previa"}
+                    </Btn>
+                    <Btn variant="ghost" size="sm" icon={Icons.edit} onClick={() => setNvrEditCred({ ...c, newPassword: "" })}>Editar</Btn>
+                    <Btn variant="danger" size="sm" icon={Icons.trash} onClick={() => deleteNvrCred(c.id)}>Eliminar</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Sync Preview Modal */}
+          {nvrPreview && (
+            <div style={{ ...cardStyle, border: "2px solid #2563eb" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                <h4 style={{ fontSize: "14px", fontWeight: 700, color: "#e2e8f0", margin: 0 }}>👁 Vista Previa de Sincronización</h4>
+                <Btn variant="ghost" size="sm" onClick={() => setNvrPreview(null)}>✕ Cerrar</Btn>
+              </div>
+
+              <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
+                <div style={{ background: "#0b1120", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#60a5fa" }}>{nvrPreview.cameras.length}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>En NVR</div>
+                </div>
+                <div style={{ background: "#0d3320", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#4ade80" }}>{nvrPreview.new_cameras.length}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Nuevas</div>
+                </div>
+                <div style={{ background: "#1e1b0e", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#facc15" }}>{nvrPreview.updated_cameras.length}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Actualizables</div>
+                </div>
+                <div style={{ background: "#0b1120", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#94a3b8" }}>{nvrPreview.existing_cameras.length}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Ya existen</div>
+                </div>
+              </div>
+
+              {/* Camera table */}
+              <div style={{ overflowX: "auto", marginBottom: "16px" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                  <thead>
+                    <tr style={{ background: "#0b1120", color: "#94a3b8" }}>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Canal</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Nombre</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>IP</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Modelo</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Estado</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Tipo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nvrPreview.cameras.map((cam, i) => {
+                      const isNew = nvrPreview.new_cameras.some(n => n.channel === cam.channel);
+                      const isUpdated = nvrPreview.updated_cameras.some(u => u.channel === cam.channel);
+                      const rowBg = isNew ? "#071a0e" : isUpdated ? "#1a1805" : "transparent";
+                      return (
+                        <tr key={i} style={{ background: rowBg, borderBottom: "1px solid #1e293b" }}>
+                          <td style={{ padding: "6px 10px", color: "#e2e8f0" }}>{cam.channel}</td>
+                          <td style={{ padding: "6px 10px", color: "#e2e8f0" }}>{cam.name}</td>
+                          <td style={{ padding: "6px 10px", color: "#94a3b8" }}>{cam.ip || "—"}</td>
+                          <td style={{ padding: "6px 10px", color: "#94a3b8" }}>{cam.model || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>
+                            <span style={{ color: cam.status === "online" ? "#4ade80" : "#f87171" }}>{cam.status === "online" ? "🟢" : "🔴"} {cam.status}</span>
+                          </td>
+                          <td style={{ padding: "6px 10px" }}>
+                            {isNew && <span style={{ color: "#4ade80", fontWeight: 600 }}>🆕 Nueva</span>}
+                            {isUpdated && <span style={{ color: "#facc15", fontWeight: 600 }}>🔄 Actualizar</span>}
+                            {!isNew && !isUpdated && <span style={{ color: "#64748b" }}>✓ Existe</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Sync action buttons */}
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                {nvrPreview.new_cameras.length > 0 && (
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", true, false)} disabled={nvrSyncing}>
+                    {nvrSyncing ? "⏳ Sincronizando..." : `➕ Agregar ${nvrPreview.new_cameras.length} nuevas`}
+                  </Btn>
+                )}
+                {nvrPreview.updated_cameras.length > 0 && (
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", false, true)} disabled={nvrSyncing}>
+                    {nvrSyncing ? "⏳..." : `🔄 Actualizar ${nvrPreview.updated_cameras.length}`}
+                  </Btn>
+                )}
+                {(nvrPreview.new_cameras.length > 0 || nvrPreview.updated_cameras.length > 0) && (
+                  <Btn variant="primary" onClick={() => executeNvrSync(nvrPreview.credential_id, "sync", true, true)} disabled={nvrSyncing}>
+                    {nvrSyncing ? "⏳..." : "⚡ Sincronizar Todo"}
+                  </Btn>
+                )}
+                <Btn variant="ghost" onClick={() => executeNvrSync(nvrPreview.credential_id, "status_only", false, false)} disabled={nvrSyncing}>
+                  {nvrSyncing ? "⏳..." : "📊 Solo actualizar estados"}
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Sync Logs */}
+          {nvrSiteId && (
+            <div style={cardStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", margin: 0 }}>📋 Historial de Sincronización</h4>
+                <Btn variant="ghost" size="sm" onClick={() => { setShowLogs(!showLogs); if (!showLogs) loadSyncLogs(nvrSiteId); }}>
+                  {showLogs ? "Ocultar" : "Mostrar"}
+                </Btn>
+              </div>
+              {showLogs && (
+                <div style={{ overflowX: "auto" }}>
+                  {syncLogs.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "20px", color: "#475569", fontSize: "12px" }}>Sin registros de sincronización</div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                      <thead>
+                        <tr style={{ background: "#0b1120", color: "#94a3b8" }}>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Fecha</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Acción</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Estado</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>Encontradas</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>Agregadas</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>Actualizadas</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>🟢</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>🔴</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {syncLogs.map((log, i) => (
+                          <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
+                            <td style={{ padding: "6px 8px", color: "#94a3b8" }}>{new Date(log.created_at).toLocaleString()}</td>
+                            <td style={{ padding: "6px 8px", color: "#e2e8f0" }}>{log.action}</td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span style={{ color: log.status === "ok" ? "#4ade80" : "#f87171" }}>{log.status === "ok" ? "✅" : "❌"} {log.status}</span>
+                            </td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: "#60a5fa" }}>{log.cameras_found}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: "#4ade80" }}>{log.cameras_added}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: "#facc15" }}>{log.cameras_updated}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: "#4ade80" }}>{log.cameras_online}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: "#f87171" }}>{log.cameras_offline}</td>
+                            <td style={{ padding: "6px 8px", color: "#f87171", maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis" }}>{log.error_message || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

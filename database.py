@@ -243,3 +243,44 @@ class UserSite(Base):
 
     user = relationship("User", back_populates="site_access")
     site = relationship("Site")
+
+
+class NvrCredential(Base):
+    """Stored NVR/DVR credentials per site — passwords encrypted"""
+    __tablename__ = "nvr_credentials"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    recorder_id = Column(Integer, ForeignKey("recorders.id", ondelete="SET NULL"), nullable=True)
+    label = Column(String(200), default="")          # friendly name, e.g. "NVR Principal"
+    ip = Column(String(45), nullable=False)           # NVR IP
+    port = Column(Integer, default=80)                # HTTP port (usually 80)
+    username = Column(String(100), default="admin")
+    password_enc = Column(Text, default="")           # encrypted password
+    active = Column(Boolean, default=True)
+    last_sync = Column(DateTime, nullable=True)
+    last_status = Column(String(50), default="")      # ok, error, timeout
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    site = relationship("Site")
+    recorder = relationship("Recorder")
+    sync_logs = relationship("SyncLog", back_populates="credential", cascade="all, delete-orphan")
+
+
+class SyncLog(Base):
+    """Log of every NVR sync operation"""
+    __tablename__ = "sync_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    credential_id = Column(Integer, ForeignKey("nvr_credentials.id", ondelete="CASCADE"), nullable=False)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String(50), default="")           # sync_cameras, update_status, full_sync
+    status = Column(String(20), default="")           # ok, error
+    cameras_found = Column(Integer, default=0)
+    cameras_added = Column(Integer, default=0)
+    cameras_updated = Column(Integer, default=0)
+    cameras_online = Column(Integer, default=0)
+    cameras_offline = Column(Integer, default=0)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    credential = relationship("NvrCredential", back_populates="sync_logs")
