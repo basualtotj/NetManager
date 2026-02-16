@@ -5,7 +5,7 @@ FastAPI + SQLite backend for CCTV infrastructure management
 import logging
 from typing import List, Optional
 import ipaddress
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -25,7 +25,8 @@ logger = logging.getLogger("netmanager")
 from database import (
     init_db, get_db,
     Site, Building, Rack, Router, Switch, Recorder, PatchPanel, Camera,
-    User, UserSite, NvrCredential, SyncLog
+    User, UserSite, NvrCredential, SyncLog,
+    CameraSnapshot, CameraEvent
 )
 from schemas import (
     SiteCreate, SiteUpdate, SiteOut,
@@ -42,7 +43,8 @@ from schemas import (
     NetworkSegmentItem, NetworkSegmentsUpdate, NetworkSegmentsOut,
     NvrCredentialCreate, NvrCredentialUpdate, NvrCredentialOut,
     NvrSyncPreview, NvrSyncRequest, NvrSyncResult, SyncLogOut,
-    NvrCameraPreview
+    NvrCameraPreview,
+    HybridSyncResult, HybridSyncAllResult, CameraEventOut,
 )
 from auth import (
     hash_password, verify_password, create_token,
@@ -1094,6 +1096,76 @@ def list_sync_logs(site_id: int, limit: int = Query(default=50, le=200),
                    admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Get sync history for a site."""
     return db.query(SyncLog).filter_by(site_id=site_id).order_by(SyncLog.created_at.desc()).limit(limit).all()
+
+
+# ============================================
+# HYBRID MONITORING (jobs + events)
+# ============================================
+
+from nvr_sync_service import sync_site as _hybrid_sync_site, sync_all_sites as _hybrid_sync_all
+import time as _time
+
+JOB_SECRET = os.getenv("JOB_SECRET", "netmanager-job-secret-change-me")
+
+
+@app.post("/api/jobs/nvr/sync-all", tags=["Jobs"])
+async def job_sync_all(request: Request, db: Session = Depends(get_db)):
+    """
+    Sync all sites with active NVR credentials.
+    Protected by x-job-secret header. Designed for n8n/cron.
+    """
+    secret = request.headers.get("x-job-secret", "")
+    if secret != JOB_SECRET:
+        raise HTTPException(403, "Invalid or missing x-job-secret header")
+
+    t0 = _time.monotonic()
+    results = await _hybrid_sync_all(db)
+    elapsed = int((_time.monotonic() - t0) * 1000)
+
+    return {
+        "ok": True,
+        "sites_synced": len(results),
+        "results": results,
+        "total_elapsed_ms": elapsed,
+    }
+
+
+@app.post("/api/jobs/nvr/sync-site/{site_id}", tags=["Jobs"])
+async def job_sync_site(site_id: int, request: Request,
+                        db: Session = Depends(get_db)):
+    """
+    Sync a single site. Protected by x-job-secret header.
+    """
+    secret = request.headers.get("x-job-secret", "")
+    if secret != JOB_SECRET:
+        raise HTTPException(403, "Invalid or missing x-job-secret header")
+
+    result = await _hybrid_sync_site(site_id, db)
+    return result.to_dict()
+
+
+@app.post("/api/admin/nvr/hybrid-sync/{site_id}", response_model=HybridSyncResult, tags=["NVR Sync"])
+async def admin_hybrid_sync(site_id: int, admin: User = Depends(require_admin),
+                            db: Session = Depends(get_db)):
+    """
+    Admin trigger: run hybrid sync (NVR inventory + TCP probe) for a site.
+    """
+    logger.info("Admin hybrid sync: site=%d by user=%s", site_id, admin.username)
+    result = await _hybrid_sync_site(site_id, db)
+    return HybridSyncResult(**result.to_dict())
+
+
+@app.get("/api/sites/{site_id}/camera-events", response_model=List[CameraEventOut], tags=["Monitoring"])
+def list_camera_events(site_id: int, limit: int = Query(default=100, le=500),
+                       severity: Optional[str] = None,
+                       user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Get camera events (status/inventory changes) for a site."""
+    check_site_access(user, site_id, db)
+    q = db.query(CameraEvent).filter_by(site_id=site_id)
+    if severity:
+        q = q.filter_by(severity=severity)
+    return q.order_by(CameraEvent.created_at.desc()).limit(limit).all()
 
 
 # ============================================

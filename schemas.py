@@ -29,6 +29,7 @@ class SiteBase(BaseModel):
     phone: str = ""
     email: str = ""
     network_segments: List[NetworkSegmentItem] = []
+    cctv_subnet: str = ""  # e.g. "10.1.0.0/22"
 
 class SiteCreate(SiteBase): pass
 class SiteUpdate(SiteBase): pass
@@ -36,6 +37,7 @@ class SiteUpdate(SiteBase): pass
 class SiteOut(SiteBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    cctv_subnet: str = ""
     created_at: Optional[datetime] = None
 
 
@@ -196,6 +198,9 @@ class CameraBase(BaseModel):
     location: str = ""
     cable_route: str = ""
     status: str = "online"
+    configured: bool = True
+    status_config: str = "enabled"
+    status_real: str = "unknown"
     recorder_id: Optional[int] = None
     rack_id: Optional[int] = None
     switch_id: Optional[int] = None
@@ -216,6 +221,8 @@ class CameraOut(CameraBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     site_id: int
+    last_seen_at: Optional[datetime] = None
+    offline_streak: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -354,6 +361,9 @@ class NvrCameraPreview(BaseModel):
     serial: str = ""
     mac: str = ""
     status: str = "online"
+    configured: bool = True
+    status_config: str = "enabled"
+    status_real: str = "unknown"
 
 class NvrSyncPreview(BaseModel):
     """Preview before committing sync"""
@@ -396,4 +406,48 @@ class SyncLogOut(BaseModel):
     cameras_online: int = 0
     cameras_offline: int = 0
     error_message: str = ""
+    created_at: Optional[datetime] = None
+
+
+# ============================================
+# HYBRID MONITORING
+# ============================================
+
+class HybridSyncResult(BaseModel):
+    """Result of a hybrid sync run (NVR inventory + TCP probe)."""
+    site_id: int = 0
+    ok: bool = False
+    error: str = ""
+    error_code: str = ""
+    total: int = 0
+    online: int = 0
+    offline: int = 0
+    unknown: int = 0
+    added: int = 0
+    updated: int = 0
+    inventory_changes: int = 0
+    status_changes: int = 0
+    elapsed_ms: int = 0
+    run_id: str = ""
+
+
+class HybridSyncAllResult(BaseModel):
+    """Result of syncing all sites."""
+    ok: bool = True
+    sites_synced: int = 0
+    results: List[HybridSyncResult] = []
+    total_elapsed_ms: int = 0
+
+
+class CameraEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    site_id: int
+    camera_id: Optional[int] = None
+    channel: Optional[int] = None
+    event_type: str = ""
+    from_status: str = ""
+    to_status: str = ""
+    severity: str = "info"
+    message: str = ""
     created_at: Optional[datetime] = None

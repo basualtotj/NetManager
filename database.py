@@ -54,6 +54,7 @@ class Site(Base):
     phone = Column(String(50), default="")
     email = Column(String(200), default="")
     network_segments = Column(JSON, default=list)  # [{ name, subnet, color }]
+    cctv_subnet = Column(String(100), default="")  # e.g. "10.1.0.0/22" — cameras subnet
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -187,7 +188,14 @@ class Camera(Base):
     mac = Column(String(17), default="")
     location = Column(String(300), default="")
     cable_route = Column(Text, default="")
-    status = Column(String(20), default="online")  # online, offline
+    status = Column(String(20), default="online")  # legacy: online, offline
+
+    # Hybrid monitoring fields
+    configured = Column(Boolean, default=True)             # True if NVR has Enable=True
+    status_config = Column(String(20), default="enabled")  # enabled / disabled (from NVR)
+    status_real = Column(String(20), default="unknown")    # online / offline / unknown (from probe)
+    last_seen_at = Column(DateTime, nullable=True)         # last time probe confirmed online
+    offline_streak = Column(Integer, default=0)            # consecutive failed probes (for anti-jitter)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -197,6 +205,36 @@ class Camera(Base):
     rack = relationship("Rack", back_populates="cameras")
     switch = relationship("Switch", back_populates="cameras")
     patch_panel = relationship("PatchPanel", back_populates="cameras")
+
+
+class CameraSnapshot(Base):
+    """Point-in-time snapshot of all cameras from a monitoring run."""
+    __tablename__ = "camera_snapshots"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String(50), nullable=False)            # UUID per run
+    collected_at = Column(DateTime, default=datetime.utcnow)
+    payload_json = Column(Text, default="")                # JSON: full camera list + status
+
+    site = relationship("Site")
+
+
+class CameraEvent(Base):
+    """Event log for camera status/inventory changes with deduplication."""
+    __tablename__ = "camera_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    channel = Column(Integer, nullable=True)
+    event_type = Column(String(30), default="status_change")  # status_change, inventory_change
+    from_status = Column(String(20), default="")
+    to_status = Column(String(20), default="")
+    severity = Column(String(10), default="info")             # info, warn, crit
+    message = Column(String(500), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    site = relationship("Site")
+    camera = relationship("Camera")
 
 
 # ============================================

@@ -273,6 +273,12 @@ const toFrontend = (entity, item) => {
       switchId: item.switch_id ? String(item.switch_id) : "",
       patchPanelId: item.patch_panel_id ? String(item.patch_panel_id) : "",
       patchPanelPort: item.patch_panel_port ? String(item.patch_panel_port) : "",
+      // Hybrid monitoring fields
+      configured: item.configured != null ? item.configured : true,
+      statusConfig: item.status_config || "",
+      statusReal: item.status_real || "",
+      lastSeenAt: item.last_seen_at || null,
+      offlineStreak: item.offline_streak || 0,
     };
   }
   if (entity === "nvrs") {
@@ -598,6 +604,12 @@ function AdminPanel({ authToken, onSyncComplete }) {
   const [showLogs, setShowLogs] = useState(false);
   const [recorders, setRecorders] = useState([]);
 
+  // Hybrid Monitoring state
+  const [hybridSyncing, setHybridSyncing] = useState(false);
+  const [hybridResult, setHybridResult] = useState(null);
+  const [cameraEvents, setCameraEvents] = useState([]);
+  const [showEvents, setShowEvents] = useState(false);
+
   const hdrs = { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
 
   const load = async () => {
@@ -771,6 +783,31 @@ function AdminPanel({ authToken, onSyncComplete }) {
     setNvrSyncing(false);
   };
 
+  // ---- HYBRID MONITORING FUNCTIONS ----
+  const runHybridSync = async (siteId) => {
+    setHybridSyncing(true); setHybridResult(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/admin/nvr/hybrid-sync/${siteId}`, { method: "POST", headers: hdrs });
+      const data = await r.json();
+      if (r.ok) {
+        setHybridResult(data);
+        flash(`✅ Hybrid sync: ${data.total || 0} cámaras, ${data.online || 0} online, ${data.offline || 0} offline`);
+        loadCameraEvents(siteId);
+        if (onSyncComplete) onSyncComplete();
+      } else {
+        flash(`❌ ${data.detail || "Error en hybrid sync"}`);
+      }
+    } catch (e) { flash("Error de conexión: " + e.message); }
+    setHybridSyncing(false);
+  };
+
+  const loadCameraEvents = async (siteId) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/sites/${siteId}/camera-events?limit=50`, { headers: hdrs });
+      if (r.ok) setCameraEvents(await r.json());
+    } catch {}
+  };
+
   const cardStyle = { background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px", marginBottom: "16px" };
   const tabBtn = (id, label) => (
     <button onClick={() => setTab(id)} style={{ padding: "8px 20px", background: tab === id ? "#2563eb" : "#1e293b", color: tab === id ? "#fff" : "#94a3b8", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>{label}</button>
@@ -784,6 +821,7 @@ function AdminPanel({ authToken, onSyncComplete }) {
         {tabBtn("users", "Usuarios")}
         {tabBtn("sites", "Sitios")}
         {tabBtn("nvr", "🔄 Sincronizar NVR")}
+        {tabBtn("monitoring", "📡 Monitoreo Híbrido")}
       </div>
 
       {/* ---- USERS TAB ---- */}
@@ -1089,7 +1127,8 @@ function AdminPanel({ authToken, onSyncComplete }) {
                       <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Nombre</th>
                       <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>IP</th>
                       <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Modelo</th>
-                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Estado</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Config NVR</th>
+                      <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Conectividad</th>
                       <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600 }}>Tipo</th>
                     </tr>
                   </thead>
@@ -1105,7 +1144,18 @@ function AdminPanel({ authToken, onSyncComplete }) {
                           <td style={{ padding: "6px 10px", color: "#94a3b8" }}>{cam.ip || "—"}</td>
                           <td style={{ padding: "6px 10px", color: "#94a3b8" }}>{cam.model || "—"}</td>
                           <td style={{ padding: "6px 10px" }}>
-                            <span style={{ color: cam.status === "online" ? "#4ade80" : "#f87171" }}>{cam.status === "online" ? "🟢" : "🔴"} {cam.status}</span>
+                            <span style={{ color: cam.status_config === "enabled" ? "#4ade80" : "#f87171", fontSize: "11px" }}>
+                              {cam.status_config === "enabled" ? "✓ Hab." : cam.status_config === "disabled" ? "✗ Des." : cam.status || "—"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "6px 10px" }}>
+                            {(!cam.status_real || cam.status_real === "unknown") ? (
+                              <span style={{ color: "#64748b", fontSize: "11px" }}>⚪ —</span>
+                            ) : (
+                              <span style={{ color: cam.status_real === "online" ? "#4ade80" : "#f87171", fontSize: "11px" }}>
+                                {cam.status_real === "online" ? "🟢 Online" : "🔴 Offline"}
+                              </span>
+                            )}
                           </td>
                           <td style={{ padding: "6px 10px" }}>
                             {isNew && <span style={{ color: "#4ade80", fontWeight: 600 }}>🆕 Nueva</span>}
@@ -1187,6 +1237,135 @@ function AdminPanel({ authToken, onSyncComplete }) {
                             <td style={{ padding: "6px 8px", color: "#f87171", maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis" }}>{log.error_message || "—"}</td>
                           </tr>
                         ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- MONITORING TAB ---- */}
+      {tab === "monitoring" && (
+        <div>
+          {/* Site selector for monitoring */}
+          <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <label style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600 }}>Sitio:</label>
+            <select value={nvrSiteId || ""} onChange={e => { const v = parseInt(e.target.value); setNvrSiteId(v || null); if (v) { loadCameraEvents(v); } else { setCameraEvents([]); } }}
+              style={{ background: "#0b1120", border: "1px solid #1e293b", borderRadius: "6px", padding: "6px 12px", color: "#e2e8f0", fontSize: "12px", minWidth: "200px" }}>
+              <option value="">— Selecciona un sitio —</option>
+              {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            {nvrSiteId && (
+              <Btn variant="primary" onClick={() => runHybridSync(nvrSiteId)} disabled={hybridSyncing}>
+                {hybridSyncing ? "⏳ Ejecutando Hybrid Sync..." : "📡 Ejecutar Hybrid Sync"}
+              </Btn>
+            )}
+          </div>
+
+          {!nvrSiteId && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#475569", fontSize: "13px" }}>
+              Selecciona un sitio para ejecutar el monitoreo híbrido (inventario NVR + probe TCP)
+            </div>
+          )}
+
+          {/* Info box */}
+          {nvrSiteId && (
+            <div style={{ background: "#0b1120", border: "1px solid #1e3a5f", borderRadius: "8px", padding: "14px 18px", marginBottom: "16px", fontSize: "11px", color: "#60a5fa" }}>
+              <strong>📡 Monitoreo Híbrido</strong> combina el inventario del NVR (<em>status_config</em>: enabled/disabled) con un probe TCP directo a cada cámara (<em>status_real</em>: online/offline/unknown).
+              <br/>Anti-jitter: una cámara debe fallar <b>2 probes consecutivos</b> para marcarse como <b>offline</b>.
+              <br/>Si las cámaras no son ruteables desde el servidor, el status será <b>⚪ unknown</b>.
+            </div>
+          )}
+
+          {/* Hybrid Sync Result */}
+          {hybridResult && (
+            <div style={{ ...cardStyle, border: "2px solid #2563eb" }}>
+              <h4 style={{ fontSize: "14px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>📊 Resultado Hybrid Sync</h4>
+              <div style={{ display: "flex", gap: "12px", marginBottom: "12px", flexWrap: "wrap" }}>
+                <div style={{ background: "#0b1120", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#60a5fa" }}>{hybridResult.total || 0}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Total</div>
+                </div>
+                <div style={{ background: "#0d3320", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#4ade80" }}>{hybridResult.online || 0}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Online</div>
+                </div>
+                <div style={{ background: "#3b1c1c", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#f87171" }}>{hybridResult.offline || 0}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Offline</div>
+                </div>
+                <div style={{ background: "#1e1e1e", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: "#94a3b8" }}>{hybridResult.unknown || 0}</div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>Unknown</div>
+                </div>
+                {(hybridResult.status_changes != null && hybridResult.status_changes > 0) && (
+                  <div style={{ background: "#1e1b0e", borderRadius: "8px", padding: "10px 16px", textAlign: "center" }}>
+                    <div style={{ fontSize: "20px", fontWeight: 700, color: "#facc15" }}>{hybridResult.status_changes}</div>
+                    <div style={{ fontSize: "10px", color: "#94a3b8" }}>Cambios</div>
+                  </div>
+                )}
+              </div>
+              {hybridResult.elapsed_ms && (
+                <div style={{ fontSize: "11px", color: "#475569" }}>Duración: {hybridResult.elapsed_ms} ms</div>
+              )}
+            </div>
+          )}
+
+          {/* Camera Events Log */}
+          {nvrSiteId && (
+            <div style={cardStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", margin: 0 }}>🔔 Eventos de Cámaras</h4>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <Btn variant="ghost" size="sm" onClick={() => loadCameraEvents(nvrSiteId)}>🔄 Refrescar</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => setShowEvents(!showEvents)}>
+                    {showEvents ? "Ocultar" : "Mostrar"}
+                  </Btn>
+                </div>
+              </div>
+              {showEvents && (
+                <div style={{ overflowX: "auto" }}>
+                  {cameraEvents.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "20px", color: "#475569", fontSize: "12px" }}>Sin eventos registrados. Ejecuta un Hybrid Sync para comenzar.</div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                      <thead>
+                        <tr style={{ background: "#0b1120", color: "#94a3b8" }}>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Fecha</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Canal</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Tipo</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>De → A</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Severidad</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left" }}>Mensaje</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cameraEvents.map((evt, i) => {
+                          const sevColors = { info: "#60a5fa", warn: "#facc15", crit: "#f87171" };
+                          return (
+                            <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
+                              <td style={{ padding: "6px 8px", color: "#94a3b8" }}>{new Date(evt.created_at).toLocaleString()}</td>
+                              <td style={{ padding: "6px 8px", color: "#e2e8f0", fontFamily: "'JetBrains Mono', monospace" }}>{evt.channel || "—"}</td>
+                              <td style={{ padding: "6px 8px", color: "#e2e8f0" }}>{evt.event_type}</td>
+                              <td style={{ padding: "6px 8px" }}>
+                                <span style={{ color: "#64748b" }}>{evt.from_status || "—"}</span>
+                                <span style={{ color: "#475569", margin: "0 4px" }}>→</span>
+                                <span style={{ color: evt.to_status === "online" ? "#4ade80" : evt.to_status === "offline" ? "#f87171" : "#94a3b8" }}>{evt.to_status || "—"}</span>
+                              </td>
+                              <td style={{ padding: "6px 8px" }}>
+                                <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "10px", fontWeight: 600,
+                                  background: evt.severity === "crit" ? "#3b1c1c" : evt.severity === "warn" ? "#1e1b0e" : "#0b1e3a",
+                                  color: sevColors[evt.severity] || "#94a3b8" }}>
+                                  {evt.severity}
+                                </span>
+                              </td>
+                              <td style={{ padding: "6px 8px", color: "#94a3b8", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis" }}>{evt.message || "—"}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -2168,7 +2347,31 @@ function App() {
                     return p ? `${p.name}${row.patchPanelPort ? ` :${row.patchPanelPort}` : ""}` : "—";
                   }},
                   { key: "location", label: "Ubicación" },
-                  { key: "status", label: "Estado", render: (v) => (
+                  { key: "statusConfig", label: "NVR", render: (v) => {
+                    if (!v) return <span style={{ color: "#475569" }}>—</span>;
+                    const isEnabled = v === "enabled";
+                    return <span style={{ color: isEnabled ? "#4ade80" : "#f87171", fontSize: "11px", fontWeight: 600 }}>{isEnabled ? "✓ Hab." : "✗ Des."}</span>;
+                  }},
+                  { key: "statusReal", label: "Conectividad", render: (v, row) => {
+                    if (!v || v === "unknown") return (
+                      <span style={{ color: "#64748b", fontSize: "11px" }} title="Cámaras aún detrás del NIC del NVR — sin TCP probe">⚪ Desconocido</span>
+                    );
+                    const isOnline = v === "online";
+                    return (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: isOnline ? "#10b981" : "#ef4444" }} />
+                        <span style={{ color: isOnline ? "#4ade80" : "#f87171", fontSize: "11px", fontWeight: 600 }}>
+                          {isOnline ? "Online" : "Offline"}
+                        </span>
+                        {!isOnline && row.offlineStreak > 1 && (
+                          <span style={{ fontSize: "9px", color: "#f87171", marginLeft: "2px" }} title={`${row.offlineStreak} fallos consecutivos`}>
+                            ({row.offlineStreak}x)
+                          </span>
+                        )}
+                      </span>
+                    );
+                  }},
+                  { key: "status", label: "Estado (legacy)", render: (v) => (
                     <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: v === "offline" ? "#ef4444" : "#10b981" }} />
                       {v === "offline" ? "Offline" : "Online"}

@@ -275,7 +275,8 @@ async def dahua_get_cameras(client: httpx.AsyncClient, base_url: str,
             match = re.search(r'INFO_(\d+)', key)
             canal = int(match.group(1)) + 1 if match else 0
 
-            if not val.get("Enable"):
+            enabled = bool(val.get("Enable"))
+            if not enabled:
                 continue
 
             serial = val.get("SerialNo") or val.get("Name") or ""
@@ -294,7 +295,11 @@ async def dahua_get_cameras(client: httpx.AsyncClient, base_url: str,
                 "model": model,
                 "serial": serial,
                 "mac": val.get("Mac", ""),
-                "status": _parse_connection_state(val),
+                "version": version,
+                "configured": True,
+                "status_config": "enabled",
+                # status_real is NOT set here — it comes from probe
+                "status": _parse_connection_state(val),  # legacy compat
             })
 
     cameras.sort(key=lambda x: x["channel"])
