@@ -9,6 +9,7 @@ const DEFAULT_SITE = {
   contact: "Fernando Flores",
   phone: "+56 9 XXXX XXXX",
   email: "admin@donbosco.cl",
+  networkSegments: [],
 };
 
 const DEFAULT_DATA = {
@@ -976,7 +977,7 @@ function App() {
     try {
       const full = await api.get(`/api/sites/${sid}/full`);
       setData({
-        site: { name: full.site.name, address: full.site.address, contact: full.site.contact, phone: full.site.phone, email: full.site.email },
+        site: { name: full.site.name, address: full.site.address, contact: full.site.contact, phone: full.site.phone, email: full.site.email, networkSegments: full.site.network_segments || [] },
         buildings: full.buildings.map(b => toFrontend("buildings", b)),
         racks: full.racks.map(r => toFrontend("racks", r)),
         routers: full.routers.map(r => toFrontend("routers", r)),
@@ -1565,20 +1566,66 @@ function App() {
 
                 <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px" }}>
                   <h3 style={{ fontSize: "13px", fontWeight: 700, marginBottom: "12px", color: "#94a3b8" }}>Segmentos de Red</h3>
-                  {[
-                    { name: "LAN", subnet: "192.168.100.0/22", color: "#3b82f6" },
-                    { name: "CCTV", subnet: "10.1.1.0/24", color: "#10b981" },
-                    { name: "VPN L2TP", subnet: "10.10.10.0/24", color: "#ef4444" },
-                    { name: "WAN", subnet: "190.4.208.0/21", color: "#f59e0b" },
-                  ].map(seg => (
-                    <div key={seg.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #1a2235" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: seg.color }} />
-                        <span style={{ fontSize: "12px", color: "#cbd5e1" }}>{seg.name}</span>
+                  {(() => {
+                    // Dynamic: load segments from API or compute from device IPs
+                    const [netSegs, setNetSegs] = useState([]);
+                    const [netLoading, setNetLoading] = useState(true);
+                    useEffect(() => {
+                      if (apiMode && siteId) {
+                        api.get(`/api/sites/${siteId}/network-segments`)
+                          .then(r => { setNetSegs(r.segments || []); setNetLoading(false); })
+                          .catch(() => { setNetSegs([]); setNetLoading(false); });
+                      } else {
+                        // Offline: detect from local device IPs
+                        const ipMap = {};
+                        const colors = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
+                        const allIPs = [
+                          ...data.cameras.map(c => c.ip),
+                          ...data.switches.map(s => s.ip),
+                          ...data.routers.flatMap(r => [r.lanIp, r.wanIp]),
+                          ...data.nvrs.flatMap(n => (n.nics || []).map(nic => nic.ip)),
+                        ].filter(Boolean);
+                        allIPs.forEach(ip => {
+                          try {
+                            const parts = ip.split(".");
+                            if (parts.length === 4) {
+                              const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+                              ipMap[subnet] = (ipMap[subnet] || 0) + 1;
+                            }
+                          } catch(e) {}
+                        });
+                        // Merge with manual segments from site
+                        const manual = (data.site.networkSegments || []).map(s => ({
+                          name: s.name, subnet: s.subnet, color: s.color, auto: false,
+                          count: ipMap[s.subnet] || 0,
+                        }));
+                        const manualSubnets = new Set(manual.map(m => m.subnet));
+                        const auto = Object.entries(ipMap)
+                          .filter(([sub]) => !manualSubnets.has(sub))
+                          .sort((a,b) => b[1] - a[1])
+                          .map(([sub, cnt], i) => ({
+                            name: `Auto (${cnt} hosts)`, subnet: sub,
+                            color: colors[i % colors.length], auto: true,
+                          }));
+                        // Enrich manual with counts
+                        manual.forEach(m => { if (ipMap[m.subnet]) m.name = `${m.name} (${ipMap[m.subnet]} hosts)`; });
+                        setNetSegs([...manual, ...auto]);
+                        setNetLoading(false);
+                      }
+                    }, [data.cameras, data.switches, data.routers, data.nvrs, data.site.networkSegments, siteId, apiMode]);
+
+                    if (netLoading) return <p style={{ color: "#475569", fontSize: "12px" }}>Detectando segmentos...</p>;
+                    if (netSegs.length === 0) return <p style={{ color: "#475569", fontSize: "12px" }}>No se detectaron segmentos de red.</p>;
+                    return netSegs.map((seg, i) => (
+                      <div key={seg.subnet + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #1a2235" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: seg.color }} />
+                          <span style={{ fontSize: "12px", color: "#cbd5e1" }}>{seg.name}{seg.auto ? "" : ""}</span>
+                        </div>
+                        <span style={{ fontSize: "11px", color: "#22d3ee", fontFamily: "'JetBrains Mono', monospace" }}>{seg.subnet}</span>
                       </div>
-                      <span style={{ fontSize: "11px", color: "#22d3ee", fontFamily: "'JetBrains Mono', monospace" }}>{seg.subnet}</span>
-                    </div>
-                  ))}
+                    ));
+                  })()}
                 </div>
 
                 <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px" }}>
@@ -2225,6 +2272,63 @@ function App() {
                 <Field label="Teléfono" value={data.site.phone} onChange={v => update("site", { ...data.site, phone: v })} />
                 <Field label="Email" value={data.site.email} onChange={v => update("site", { ...data.site, email: v })} />
               </div>
+
+              {/* Network Segments Editor */}
+              <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "24px", marginBottom: "16px" }}>
+                <h3 style={{ fontSize: "14px", fontWeight: 700, marginBottom: "16px", color: "#94a3b8" }}>Segmentos de Red</h3>
+                <p style={{ fontSize: "11px", color: "#64748b", marginBottom: "16px" }}>
+                  Los segmentos se detectan automáticamente desde las IPs de los dispositivos. Puedes agregar segmentos manuales para etiquetar o añadir redes que no tienen dispositivos registrados.
+                </p>
+                {(() => {
+                  const segments = data.site.networkSegments || [];
+                  const segColors = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#14b8a6","#f97316","#6366f1"];
+
+                  const addSeg = () => {
+                    const newSegs = [...segments, { name: "", subnet: "", color: segColors[segments.length % segColors.length] }];
+                    update("site", { ...data.site, networkSegments: newSegs });
+                  };
+                  const updateSeg = (idx, field, val) => {
+                    const newSegs = segments.map((s, i) => i === idx ? { ...s, [field]: val } : s);
+                    update("site", { ...data.site, networkSegments: newSegs });
+                  };
+                  const removeSeg = (idx) => {
+                    const newSegs = segments.filter((_, i) => i !== idx);
+                    update("site", { ...data.site, networkSegments: newSegs });
+                  };
+                  const saveSegs = async () => {
+                    if (apiMode && siteId) {
+                      try {
+                        await api.put(`/api/sites/${siteId}/network-segments`, { segments: segments.map(s => ({ ...s, auto: false })) });
+                        alert("Segmentos guardados correctamente");
+                      } catch (e) { alert("Error al guardar: " + e.message); }
+                    }
+                  };
+
+                  return (
+                    <div>
+                      {segments.map((seg, i) => (
+                        <div key={i} style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "8px" }}>
+                          <input type="color" value={seg.color || "#3b82f6"} onChange={e => updateSeg(i, "color", e.target.value)}
+                            style={{ width: "32px", height: "32px", border: "1px solid #2a3550", borderRadius: "4px", background: "#0f172a", cursor: "pointer", padding: "2px" }} />
+                          <input value={seg.name || ""} onChange={e => updateSeg(i, "name", e.target.value)} placeholder="Nombre (ej: LAN)"
+                            style={{ flex: 1, padding: "6px 10px", background: "#0f172a", border: "1px solid #2a3550", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", fontFamily: "'JetBrains Mono', monospace", outline: "none" }} />
+                          <input value={seg.subnet || ""} onChange={e => updateSeg(i, "subnet", e.target.value)} placeholder="192.168.1.0/24"
+                            style={{ width: "180px", padding: "6px 10px", background: "#0f172a", border: "1px solid #2a3550", borderRadius: "6px", color: "#22d3ee", fontSize: "12px", fontFamily: "'JetBrains Mono', monospace", outline: "none" }} />
+                          <button onClick={() => removeSeg(i)}
+                            style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}>
+                            {Icons.trash}
+                          </button>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                        <Btn variant="ghost" size="sm" icon={Icons.plus} onClick={addSeg}>Agregar Segmento</Btn>
+                        <Btn variant="primary" size="sm" onClick={saveSegs}>Guardar Segmentos</Btn>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
               <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "24px" }}>
                 <h3 style={{ fontSize: "14px", fontWeight: 700, marginBottom: "16px", color: "#94a3b8" }}>Datos y Respaldo</h3>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>

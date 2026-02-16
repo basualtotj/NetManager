@@ -53,6 +53,7 @@ class Site(Base):
     contact = Column(String(200), default="")
     phone = Column(String(50), default="")
     email = Column(String(200), default="")
+    network_segments = Column(JSON, default=list)  # [{ name, subnet, color }]
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

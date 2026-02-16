@@ -3,6 +3,7 @@ NetManager — API Server
 FastAPI + SQLite backend for CCTV infrastructure management
 """
 from typing import List, Optional
+import ipaddress
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +27,8 @@ from schemas import (
     CameraCreate, CameraUpdate, CameraOut, CameraBulkCreate,
     DashboardStats, SiteFullExport,
     LoginRequest, LoginResponse, UserCreate, UserUpdate, UserOut,
-    UserSiteAssign, SiteListItem
+    UserSiteAssign, SiteListItem,
+    NetworkSegmentItem, NetworkSegmentsUpdate, NetworkSegmentsOut
 )
 from auth import (
     hash_password, verify_password, create_token,
@@ -215,12 +217,125 @@ def get_site(site_id: int, user: User = Depends(get_current_user), db: Session =
 
 @app.put("/api/sites/{site_id}", response_model=SiteOut, tags=["Sites"])
 def update_site(site_id: int, data: SiteUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return _update(db, Site, site_id, data.model_dump())
+    d = data.model_dump()
+    # Serialize NetworkSegmentItem objects to plain dicts for JSON column
+    if "network_segments" in d:
+        d["network_segments"] = [
+            s if isinstance(s, dict) else s
+            for s in d["network_segments"]
+        ]
+    return _update(db, Site, site_id, d)
 
 
 @app.delete("/api/sites/{site_id}", tags=["Sites"])
 def delete_site(site_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return _delete(db, Site, site_id)
+
+
+# ============================================
+# NETWORK SEGMENTS (auto-detect + manual)
+# ============================================
+
+def _detect_subnets(ips: List[str], prefix: int = 24) -> dict:
+    """Group IPs into /prefix subnets and return {subnet_str: count}"""
+    subnets = {}
+    for raw in ips:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        try:
+            addr = ipaddress.ip_address(raw)
+            net = ipaddress.ip_network(f"{addr}/{prefix}", strict=False)
+            key = str(net)
+            subnets[key] = subnets.get(key, 0) + 1
+        except ValueError:
+            continue
+    return subnets
+
+
+AUTO_SEGMENT_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
+                        "#06b6d4", "#ec4899", "#14b8a6", "#f97316", "#6366f1"]
+
+
+@app.get("/api/sites/{site_id}/network-segments", response_model=NetworkSegmentsOut, tags=["Network"])
+def get_network_segments(site_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return auto-detected segments from device IPs + manual segments saved on the site"""
+    check_site_access(user, site_id, db)
+    site = _get_or_404(db, Site, site_id)
+
+    # Collect all IPs from every device type in this site
+    all_ips = []
+    for cam in db.query(Camera).filter_by(site_id=site_id).all():
+        if cam.ip:
+            all_ips.append(cam.ip)
+    for sw in db.query(Switch).filter_by(site_id=site_id).all():
+        if sw.ip:
+            all_ips.append(sw.ip)
+    for rt in db.query(Router).filter_by(site_id=site_id).all():
+        if rt.lan_ip:
+            all_ips.append(rt.lan_ip)
+        if rt.wan_ip:
+            all_ips.append(rt.wan_ip)
+    for rec in db.query(Recorder).filter_by(site_id=site_id).all():
+        for nic in (rec.nics or []):
+            ip = nic.get("ip", "") if isinstance(nic, dict) else ""
+            if ip:
+                all_ips.append(ip)
+
+    detected = _detect_subnets(all_ips)
+
+    # Build auto segments
+    auto_segments = []
+    for i, (subnet, count) in enumerate(sorted(detected.items(), key=lambda x: -x[1])):
+        color = AUTO_SEGMENT_COLORS[i % len(AUTO_SEGMENT_COLORS)]
+        auto_segments.append(NetworkSegmentItem(
+            name=f"Auto ({count} hosts)",
+            subnet=subnet,
+            color=color,
+            auto=True,
+        ))
+
+    # Manual segments from the site record
+    manual = []
+    for seg in (site.network_segments or []):
+        s = seg if isinstance(seg, dict) else seg
+        manual.append(NetworkSegmentItem(
+            name=s.get("name", ""),
+            subnet=s.get("subnet", ""),
+            color=s.get("color", "#64748b"),
+            auto=False,
+        ))
+
+    # Merge: manual first (they may label auto-detected subnets), then auto that aren't already covered
+    manual_subnets = {m.subnet for m in manual}
+    # For manual segments that match an auto-detected subnet, enrich the name with host count
+    for m in manual:
+        if m.subnet in detected:
+            m.name = f"{m.name} ({detected[m.subnet]} hosts)"
+
+    merged = list(manual)
+    for a in auto_segments:
+        if a.subnet not in manual_subnets:
+            merged.append(a)
+
+    return NetworkSegmentsOut(segments=merged)
+
+
+@app.put("/api/sites/{site_id}/network-segments", response_model=NetworkSegmentsOut, tags=["Network"])
+def update_network_segments(site_id: int, data: NetworkSegmentsUpdate,
+                            user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Save manual network segments for a site (auto-detected ones are not stored)"""
+    check_site_access(user, site_id, db)
+    site = _get_or_404(db, Site, site_id)
+    # Only store non-auto segments
+    site.network_segments = [
+        {"name": s.name, "subnet": s.subnet, "color": s.color}
+        for s in data.segments if not s.auto
+    ]
+    db.commit()
+    db.refresh(site)
+    # Return the full merged view
+    return get_network_segments(site_id, user, db)
 
 
 # ============================================
@@ -577,7 +692,14 @@ def seed_donbosco(db: Session = Depends(get_db)):
         raise HTTPException(400, "Don Bosco data already exists")
 
     site = Site(name="Colegio Técnico Industrial Don Bosco", address="Antofagasta, Chile",
-                contact="Fernando Flores", phone="+56 9 XXXX XXXX", email="admin@donbosco.cl")
+                contact="Fernando Flores", phone="+56 9 XXXX XXXX", email="admin@donbosco.cl",
+                network_segments=[
+                    {"name": "LAN", "subnet": "192.168.100.0/22", "color": "#3b82f6"},
+                    {"name": "CCTV", "subnet": "192.168.1.0/24", "color": "#10b981"},
+                    {"name": "Switches", "subnet": "10.1.1.0/24", "color": "#f59e0b"},
+                    {"name": "VPN L2TP", "subnet": "10.10.10.0/24", "color": "#ef4444"},
+                    {"name": "WAN", "subnet": "190.4.208.0/21", "color": "#f97316"},
+                ])
     db.add(site)
     db.flush()
 

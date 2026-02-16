@@ -8,6 +8,17 @@ from pydantic import BaseModel, ConfigDict
 
 
 # ============================================
+# NETWORK SEGMENT
+# ============================================
+
+class NetworkSegmentItem(BaseModel):
+    name: str = ""
+    subnet: str = ""
+    color: str = "#3b82f6"
+    auto: bool = False  # True = auto-detected from device IPs
+
+
+# ============================================
 # SITE
 # ============================================
 
@@ -17,6 +28,7 @@ class SiteBase(BaseModel):
     contact: str = ""
     phone: str = ""
     email: str = ""
+    network_segments: List[NetworkSegmentItem] = []
 
 class SiteCreate(SiteBase): pass
 class SiteUpdate(SiteBase): pass
@@ -285,3 +297,13 @@ class SiteListItem(BaseModel):
     name: str
     address: str = ""
     camera_count: int = 0
+
+
+class NetworkSegmentsUpdate(BaseModel):
+    """Update manual network segments for a site"""
+    segments: List[NetworkSegmentItem] = []
+
+
+class NetworkSegmentsOut(BaseModel):
+    """Combined auto-detected + manual segments"""
+    segments: List[NetworkSegmentItem] = []
