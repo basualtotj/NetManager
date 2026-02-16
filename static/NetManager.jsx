@@ -964,6 +964,53 @@ function App() {
   const [siteId, setSiteId] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // Network segments (moved here — hooks cannot live inside JSX IIFE)
+  const [netSegs, setNetSegs] = useState([]);
+  const [netLoading, setNetLoading] = useState(true);
+
+  useEffect(() => {
+    if (apiMode && siteId) {
+      setNetLoading(true);
+      api.get(`/api/sites/${siteId}/network-segments`)
+        .then(r => { setNetSegs(r.segments || []); setNetLoading(false); })
+        .catch(() => { setNetSegs([]); setNetLoading(false); });
+    } else {
+      // Offline: detect from local device IPs
+      const ipMap = {};
+      const colors = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
+      const allIPs = [
+        ...data.cameras.map(c => c.ip),
+        ...data.switches.map(s => s.ip),
+        ...data.routers.flatMap(r => [r.lanIp, r.wanIp]),
+        ...data.nvrs.flatMap(n => (n.nics || []).map(nic => nic.ip)),
+      ].filter(Boolean);
+      allIPs.forEach(ip => {
+        try {
+          const parts = ip.split(".");
+          if (parts.length === 4) {
+            const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+            ipMap[subnet] = (ipMap[subnet] || 0) + 1;
+          }
+        } catch(e) {}
+      });
+      const manual = (data.site.networkSegments || []).map(s => ({
+        name: s.name, subnet: s.subnet, color: s.color, auto: false,
+        count: ipMap[s.subnet] || 0,
+      }));
+      const manualSubnets = new Set(manual.map(m => m.subnet));
+      const auto = Object.entries(ipMap)
+        .filter(([sub]) => !manualSubnets.has(sub))
+        .sort((a,b) => b[1] - a[1])
+        .map(([sub, cnt], i) => ({
+          name: `Auto (${cnt} hosts)`, subnet: sub,
+          color: colors[i % colors.length], auto: true,
+        }));
+      manual.forEach(m => { if (ipMap[m.subnet]) m.name = `${m.name} (${ipMap[m.subnet]} hosts)`; });
+      setNetSegs([...manual, ...auto]);
+      setNetLoading(false);
+    }
+  }, [data.cameras, data.switches, data.routers, data.nvrs, data.site.networkSegments, siteId, apiMode]);
+
   const handleLogin = (token, user) => {
     api.setToken(token);
     setAuthToken(token);
@@ -1566,66 +1613,19 @@ function App() {
 
                 <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px" }}>
                   <h3 style={{ fontSize: "13px", fontWeight: 700, marginBottom: "12px", color: "#94a3b8" }}>Segmentos de Red</h3>
-                  {(() => {
-                    // Dynamic: load segments from API or compute from device IPs
-                    const [netSegs, setNetSegs] = useState([]);
-                    const [netLoading, setNetLoading] = useState(true);
-                    useEffect(() => {
-                      if (apiMode && siteId) {
-                        api.get(`/api/sites/${siteId}/network-segments`)
-                          .then(r => { setNetSegs(r.segments || []); setNetLoading(false); })
-                          .catch(() => { setNetSegs([]); setNetLoading(false); });
-                      } else {
-                        // Offline: detect from local device IPs
-                        const ipMap = {};
-                        const colors = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
-                        const allIPs = [
-                          ...data.cameras.map(c => c.ip),
-                          ...data.switches.map(s => s.ip),
-                          ...data.routers.flatMap(r => [r.lanIp, r.wanIp]),
-                          ...data.nvrs.flatMap(n => (n.nics || []).map(nic => nic.ip)),
-                        ].filter(Boolean);
-                        allIPs.forEach(ip => {
-                          try {
-                            const parts = ip.split(".");
-                            if (parts.length === 4) {
-                              const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
-                              ipMap[subnet] = (ipMap[subnet] || 0) + 1;
-                            }
-                          } catch(e) {}
-                        });
-                        // Merge with manual segments from site
-                        const manual = (data.site.networkSegments || []).map(s => ({
-                          name: s.name, subnet: s.subnet, color: s.color, auto: false,
-                          count: ipMap[s.subnet] || 0,
-                        }));
-                        const manualSubnets = new Set(manual.map(m => m.subnet));
-                        const auto = Object.entries(ipMap)
-                          .filter(([sub]) => !manualSubnets.has(sub))
-                          .sort((a,b) => b[1] - a[1])
-                          .map(([sub, cnt], i) => ({
-                            name: `Auto (${cnt} hosts)`, subnet: sub,
-                            color: colors[i % colors.length], auto: true,
-                          }));
-                        // Enrich manual with counts
-                        manual.forEach(m => { if (ipMap[m.subnet]) m.name = `${m.name} (${ipMap[m.subnet]} hosts)`; });
-                        setNetSegs([...manual, ...auto]);
-                        setNetLoading(false);
-                      }
-                    }, [data.cameras, data.switches, data.routers, data.nvrs, data.site.networkSegments, siteId, apiMode]);
-
-                    if (netLoading) return <p style={{ color: "#475569", fontSize: "12px" }}>Detectando segmentos...</p>;
-                    if (netSegs.length === 0) return <p style={{ color: "#475569", fontSize: "12px" }}>No se detectaron segmentos de red.</p>;
-                    return netSegs.map((seg, i) => (
-                      <div key={seg.subnet + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #1a2235" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: seg.color }} />
-                          <span style={{ fontSize: "12px", color: "#cbd5e1" }}>{seg.name}{seg.auto ? "" : ""}</span>
-                        </div>
-                        <span style={{ fontSize: "11px", color: "#22d3ee", fontFamily: "'JetBrains Mono', monospace" }}>{seg.subnet}</span>
+                  {netLoading ? (
+                    <p style={{ color: "#475569", fontSize: "12px" }}>Detectando segmentos...</p>
+                  ) : netSegs.length === 0 ? (
+                    <p style={{ color: "#475569", fontSize: "12px" }}>No se detectaron segmentos de red.</p>
+                  ) : netSegs.map((seg, i) => (
+                    <div key={seg.subnet + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #1a2235" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: seg.color }} />
+                        <span style={{ fontSize: "12px", color: "#cbd5e1" }}>{seg.name}{seg.auto ? "" : ""}</span>
                       </div>
-                    ));
-                  })()}
+                      <span style={{ fontSize: "11px", color: "#22d3ee", fontFamily: "'JetBrains Mono', monospace" }}>{seg.subnet}</span>
+                    </div>
+                  ))}
                 </div>
 
                 <div style={{ background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px" }}>
