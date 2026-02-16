@@ -138,6 +138,9 @@ const Icons = {
   cable: (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9z"/><path d="M15 9a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2V9z"/><path d="M9 10h6"/></svg>
   ),
+  users: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+  ),
 };
 
 // ============================================
@@ -568,6 +571,260 @@ function StatCard({ label, value, color, icon, onClick }) {
     </div>
   );
 }
+
+// ============================================
+// ADMIN PANEL — Users, Sites, Access
+// ============================================
+function AdminPanel({ authToken }) {
+  const [users, setUsers] = useState([]);
+  const [sites, setSites] = useState([]);
+  const [tab, setTab] = useState("users");
+  const [editUser, setEditUser] = useState(null);
+  const [editSite, setEditSite] = useState(null);
+  const [newUser, setNewUser] = useState(null);
+  const [newSite, setNewSite] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  const hdrs = { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` };
+
+  const load = async () => {
+    try {
+      const [u, s] = await Promise.all([
+        fetch(`${API_BASE}/api/users`, { headers: hdrs }).then(r => r.json()),
+        fetch(`${API_BASE}/api/sites`, { headers: hdrs }).then(r => r.json()),
+      ]);
+      setUsers(u); setSites(s);
+    } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(""), 3000); };
+
+  const saveUser = async (u) => {
+    try {
+      if (u.id) {
+        const body = { display_name: u.display_name, role: u.role, active: u.active };
+        if (u.newPassword) body.password = u.newPassword;
+        await fetch(`${API_BASE}/api/users/${u.id}`, { method: "PUT", headers: hdrs, body: JSON.stringify(body) });
+        if (u.site_ids !== undefined) {
+          await fetch(`${API_BASE}/api/users/${u.id}/sites`, { method: "PUT", headers: hdrs, body: JSON.stringify({ site_ids: u.site_ids }) });
+        }
+        flash("Usuario actualizado");
+      } else {
+        const res = await fetch(`${API_BASE}/api/users`, { method: "POST", headers: hdrs, body: JSON.stringify({ username: u.username, display_name: u.display_name, role: u.role, password: u.password }) });
+        if (!res.ok) { const e = await res.json(); flash(e.detail || "Error"); return; }
+        const created = await res.json();
+        if (u.site_ids?.length) {
+          await fetch(`${API_BASE}/api/users/${created.id}/sites`, { method: "PUT", headers: hdrs, body: JSON.stringify({ site_ids: u.site_ids }) });
+        }
+        flash("Usuario creado");
+      }
+      setEditUser(null); setNewUser(null); load();
+    } catch (e) { flash("Error: " + e.message); }
+  };
+
+  const deleteUser = async (uid) => {
+    if (!confirm("¿Eliminar este usuario?")) return;
+    await fetch(`${API_BASE}/api/users/${uid}`, { method: "DELETE", headers: hdrs });
+    flash("Usuario eliminado"); load();
+  };
+
+  const saveSite = async (s) => {
+    try {
+      if (s.id) {
+        await fetch(`${API_BASE}/api/sites/${s.id}`, { method: "PUT", headers: hdrs, body: JSON.stringify(s) });
+        flash("Sitio actualizado");
+      } else {
+        const res = await fetch(`${API_BASE}/api/sites`, { method: "POST", headers: hdrs, body: JSON.stringify(s) });
+        if (!res.ok) { const e = await res.json(); flash(e.detail || "Error"); return; }
+        flash("Sitio creado");
+      }
+      setEditSite(null); setNewSite(null); load();
+    } catch (e) { flash("Error: " + e.message); }
+  };
+
+  const deleteSite = async (sid) => {
+    if (!confirm("¿Eliminar este sitio y TODOS sus datos?")) return;
+    await fetch(`${API_BASE}/api/sites/${sid}`, { method: "DELETE", headers: hdrs });
+    flash("Sitio eliminado"); load();
+  };
+
+  const cardStyle = { background: "#141c2b", border: "1px solid #1e293b", borderRadius: "10px", padding: "20px", marginBottom: "16px" };
+  const tabBtn = (id, label) => (
+    <button onClick={() => setTab(id)} style={{ padding: "8px 20px", background: tab === id ? "#2563eb" : "#1e293b", color: tab === id ? "#fff" : "#94a3b8", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>{label}</button>
+  );
+
+  return (
+    <div style={{ maxWidth: "900px" }}>
+      {msg && <div style={{ background: "#0d3320", border: "1px solid #16a34a", borderRadius: "8px", padding: "10px 16px", marginBottom: "12px", fontSize: "12px", color: "#4ade80" }}>{msg}</div>}
+
+      <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+        {tabBtn("users", "Usuarios")}
+        {tabBtn("sites", "Sitios")}
+      </div>
+
+      {/* ---- USERS TAB ---- */}
+      {tab === "users" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+            <div style={{ fontSize: "13px", color: "#64748b" }}>{users.length} usuarios registrados</div>
+            <Btn variant="primary" icon={Icons.plus} onClick={() => setNewUser({ username: "", display_name: "", role: "viewer", password: "", site_ids: [] })}>Nuevo Usuario</Btn>
+          </div>
+
+          {/* New user form */}
+          {newUser && (
+            <div style={cardStyle}>
+              <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>Crear Usuario</h4>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                <Field label="Username" value={newUser.username} onChange={v => setNewUser({ ...newUser, username: v })} required />
+                <Field label="Nombre completo" value={newUser.display_name} onChange={v => setNewUser({ ...newUser, display_name: v })} />
+                <Field label="Contraseña" value={newUser.password} onChange={v => setNewUser({ ...newUser, password: v })} type="password" required />
+                <Field label="Rol" value={newUser.role} onChange={v => setNewUser({ ...newUser, role: v })} options={[{ value: "admin", label: "Administrador" }, { value: "viewer", label: "Visualizador" }]} />
+              </div>
+              {newUser.role === "viewer" && (
+                <div style={{ marginBottom: "14px" }}>
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#94a3b8", marginBottom: "6px", textTransform: "uppercase" }}>Acceso a sitios</label>
+                  {sites.map(s => (
+                    <label key={s.id} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "#e2e8f0", marginBottom: "4px", cursor: "pointer" }}>
+                      <input type="checkbox" checked={newUser.site_ids?.includes(s.id)} onChange={e => {
+                        const ids = e.target.checked ? [...(newUser.site_ids || []), s.id] : (newUser.site_ids || []).filter(id => id !== s.id);
+                        setNewUser({ ...newUser, site_ids: ids });
+                      }} />
+                      {s.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "8px" }}>
+                <Btn variant="primary" onClick={() => saveUser(newUser)}>Crear</Btn>
+                <Btn variant="secondary" onClick={() => setNewUser(null)}>Cancelar</Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Users list */}
+          {users.map(u => (
+            <div key={u.id} style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              {editUser?.id === u.id ? (
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                    <Field label="Nombre" value={editUser.display_name} onChange={v => setEditUser({ ...editUser, display_name: v })} />
+                    <Field label="Rol" value={editUser.role} onChange={v => setEditUser({ ...editUser, role: v })} options={[{ value: "admin", label: "Administrador" }, { value: "viewer", label: "Visualizador" }]} />
+                    <Field label="Nueva contraseña (dejar vacío para no cambiar)" value={editUser.newPassword || ""} onChange={v => setEditUser({ ...editUser, newPassword: v })} type="password" />
+                    <Field label="Estado" value={editUser.active ? "true" : "false"} onChange={v => setEditUser({ ...editUser, active: v === "true" })} options={[{ value: "true", label: "Activo" }, { value: "false", label: "Desactivado" }]} />
+                  </div>
+                  {editUser.role === "viewer" && (
+                    <div style={{ marginBottom: "14px" }}>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#94a3b8", marginBottom: "6px", textTransform: "uppercase" }}>Acceso a sitios</label>
+                      {sites.map(s => (
+                        <label key={s.id} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "#e2e8f0", marginBottom: "4px", cursor: "pointer" }}>
+                          <input type="checkbox" checked={editUser.site_ids?.includes(s.id)} onChange={e => {
+                            const ids = e.target.checked ? [...(editUser.site_ids || []), s.id] : (editUser.site_ids || []).filter(id => id !== s.id);
+                            setEditUser({ ...editUser, site_ids: ids });
+                          }} />
+                          {s.name}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <Btn variant="primary" onClick={() => saveUser(editUser)}>Guardar</Btn>
+                    <Btn variant="secondary" onClick={() => setEditUser(null)}>Cancelar</Btn>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <div style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0" }}>{u.display_name || u.username}</div>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                      @{u.username} · <span style={{ color: u.role === "admin" ? "#f59e0b" : "#3b82f6" }}>{u.role === "admin" ? "Administrador" : "Visualizador"}</span>
+                      {!u.active && <span style={{ color: "#ef4444", marginLeft: "8px" }}>(desactivado)</span>}
+                    </div>
+                    {u.role === "viewer" && u.site_ids?.length > 0 && (
+                      <div style={{ fontSize: "10px", color: "#475569", marginTop: "4px" }}>
+                        Sitios: {u.site_ids.map(sid => sites.find(s => s.id === sid)?.name || `ID ${sid}`).join(", ")}
+                      </div>
+                    )}
+                    {u.role === "viewer" && (!u.site_ids || u.site_ids.length === 0) && (
+                      <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px" }}>Sin sitios asignados</div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <Btn variant="ghost" size="sm" icon={Icons.edit} onClick={() => setEditUser({ ...u })}>Editar</Btn>
+                    {u.username !== "admin" && <Btn variant="danger" size="sm" icon={Icons.trash} onClick={() => deleteUser(u.id)}>Eliminar</Btn>}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ---- SITES TAB ---- */}
+      {tab === "sites" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+            <div style={{ fontSize: "13px", color: "#64748b" }}>{sites.length} sitios registrados</div>
+            <Btn variant="primary" icon={Icons.plus} onClick={() => setNewSite({ name: "", address: "", contact: "", phone: "", email: "" })}>Nuevo Sitio</Btn>
+          </div>
+
+          {newSite && (
+            <div style={cardStyle}>
+              <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", marginBottom: "12px" }}>Crear Sitio</h4>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                <Field label="Nombre" value={newSite.name} onChange={v => setNewSite({ ...newSite, name: v })} required />
+                <Field label="Dirección" value={newSite.address} onChange={v => setNewSite({ ...newSite, address: v })} />
+                <Field label="Contacto" value={newSite.contact} onChange={v => setNewSite({ ...newSite, contact: v })} />
+                <Field label="Teléfono" value={newSite.phone} onChange={v => setNewSite({ ...newSite, phone: v })} />
+                <Field label="Email" value={newSite.email} onChange={v => setNewSite({ ...newSite, email: v })} />
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <Btn variant="primary" onClick={() => saveSite(newSite)}>Crear Sitio</Btn>
+                <Btn variant="secondary" onClick={() => setNewSite(null)}>Cancelar</Btn>
+              </div>
+            </div>
+          )}
+
+          {sites.map(s => (
+            <div key={s.id} style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              {editSite?.id === s.id ? (
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                    <Field label="Nombre" value={editSite.name} onChange={v => setEditSite({ ...editSite, name: v })} />
+                    <Field label="Dirección" value={editSite.address} onChange={v => setEditSite({ ...editSite, address: v })} />
+                    <Field label="Contacto" value={editSite.contact || ""} onChange={v => setEditSite({ ...editSite, contact: v })} />
+                    <Field label="Teléfono" value={editSite.phone || ""} onChange={v => setEditSite({ ...editSite, phone: v })} />
+                    <Field label="Email" value={editSite.email || ""} onChange={v => setEditSite({ ...editSite, email: v })} />
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <Btn variant="primary" onClick={() => saveSite(editSite)}>Guardar</Btn>
+                    <Btn variant="secondary" onClick={() => setEditSite(null)}>Cancelar</Btn>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <div style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0" }}>{s.name}</div>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>{s.address} · {s.camera_count} cámaras</div>
+                    <div style={{ fontSize: "10px", color: "#475569", marginTop: "2px" }}>
+                      Usuarios: {users.filter(u => u.role === "admin" || u.site_ids?.includes(s.id)).map(u => u.username).join(", ") || "solo admins"}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <Btn variant="ghost" size="sm" icon={Icons.edit} onClick={() => setEditSite({ ...s })}>Editar</Btn>
+                    <Btn variant="danger" size="sm" icon={Icons.trash} onClick={() => deleteSite(s.id)}>Eliminar</Btn>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ============================================
 // LOGIN SCREEN
@@ -1172,6 +1429,7 @@ function App() {
     { id: "patchPanels", label: "Patch Panels", icon: Icons.cable },
     { id: "reports", label: "Reportes PDF", icon: Icons.download },
     { id: "settings", label: "Configuración", icon: Icons.settings },
+    ...(authUser?.role === "admin" ? [{ id: "admin", label: "Administración", icon: Icons.users }] : []),
   ];
 
   return (
@@ -1997,6 +2255,11 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* ============ ADMIN PANEL ============ */}
+          {activeSection === "admin" && authUser?.role === "admin" && (
+            <AdminPanel authToken={authToken} />
           )}
         </div>
       </div>
