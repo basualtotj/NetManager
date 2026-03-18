@@ -1610,15 +1610,18 @@ function App() {
   if (authScreen === "selectSite") return <SiteSelector user={authUser} onSelect={handleSelectSite} onLogout={handleLogout} />;
   if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0e17", color: "#94a3b8", fontFamily: "'Segoe UI', sans-serif" }}>Cargando sitio...</div>;
 
-  // CRUD Helpers (API-aware)
+  // CRUD Helpers (API-aware) — if API fails, change is NOT applied locally
   const addItem = async (key, item) => {
     if (apiMode && siteId && ENTITY_API[key]) {
       try {
         const body = { ...toBackend(key, item), site_id: siteId };
         const created = await api.post(`/api/${ENTITY_API[key]}`, body);
         update(key, [...data[key], toFrontend(key, created)]);
-        return;
-      } catch (e) { console.error("API create failed:", e); }
+      } catch (e) {
+        console.error("API create failed:", e);
+        alert(`Error al crear: ${e.message}`);
+      }
+      return;
     }
     update(key, [...data[key], { ...item, id: genId() }]);
   };
@@ -1629,8 +1632,11 @@ function App() {
         const body = toBackend(key, updates);
         const updated = await api.put(`/api/${ENTITY_API[key]}/${id}`, body);
         update(key, data[key].map(i => i.id === String(id) ? toFrontend(key, updated) : i));
-        return;
-      } catch (e) { console.error("API update failed:", e); }
+      } catch (e) {
+        console.error("API update failed:", e);
+        alert(`Error al actualizar: ${e.message}`);
+      }
+      return;
     }
     update(key, data[key].map(i => i.id === id ? { ...i, ...updates } : i));
   };
@@ -1641,23 +1647,49 @@ function App() {
       try {
         await api.del(`/api/${ENTITY_API[key]}/${id}`);
         update(key, data[key].filter(i => i.id !== String(id)));
-        return;
-      } catch (e) { console.error("API delete failed:", e); }
+      } catch (e) {
+        console.error("API delete failed:", e);
+        alert(`Error al eliminar: ${e.message}`);
+      }
+      return;
     }
     update(key, data[key].filter(i => i.id !== id));
   };
 
-  // Bulk update cameras
+  // Field name mapping: frontend camelCase → backend snake_case
+  const BULK_FIELD_MAP = {
+    nvrId: "recorder_id",
+    rackId: "rack_id",
+    switchId: "switch_id",
+    patchPanelId: "patch_panel_id",
+    patchPanelPort: "patch_panel_port",
+    cableRoute: "cable_route",
+    camType: "cam_type",
+    location: "location",
+    status: "status",
+  };
+
+  // Bulk update cameras — map field to snake_case, only apply locally on API success
   const bulkUpdateCameras = async (field, value) => {
     if (apiMode) {
       try {
+        const backendField = BULK_FIELD_MAP[field] || field;
         const ids = selectedCameras.map(id => parseInt(id));
-        await api.put(`/api/cameras/bulk-update?field=${field}&value=${value}`, ids);
-      } catch (e) { console.error("Bulk update failed:", e); }
+        const backendValue = String(value);
+        await api.put(`/api/cameras/bulk-update?field=${encodeURIComponent(backendField)}&value=${encodeURIComponent(backendValue)}`, ids);
+        // Only apply locally after API success
+        update("cameras", data.cameras.map(c =>
+          selectedCameras.includes(c.id) ? { ...c, [field]: value } : c
+        ));
+      } catch (e) {
+        console.error("Bulk update failed:", e);
+        alert(`Error en actualización masiva: ${e.message}`);
+      }
+    } else {
+      update("cameras", data.cameras.map(c =>
+        selectedCameras.includes(c.id) ? { ...c, [field]: value } : c
+      ));
     }
-    update("cameras", data.cameras.map(c =>
-      selectedCameras.includes(c.id) ? { ...c, [field]: value } : c
-    ));
     setSelectedCameras([]);
     setBulkModal({ open: false, action: null });
   };
@@ -1667,9 +1699,15 @@ function App() {
     if (apiMode) {
       try {
         for (const id of selectedCameras) await api.del(`/api/cameras/${id}`);
-      } catch (e) { console.error("Bulk delete failed:", e); }
+        // Only apply locally after API success
+        update("cameras", data.cameras.filter(c => !selectedCameras.includes(c.id)));
+      } catch (e) {
+        console.error("Bulk delete failed:", e);
+        alert(`Error en eliminación masiva: ${e.message}`);
+      }
+    } else {
+      update("cameras", data.cameras.filter(c => !selectedCameras.includes(c.id)));
     }
-    update("cameras", data.cameras.filter(c => !selectedCameras.includes(c.id)));
     setSelectedCameras([]);
   };
 

@@ -625,10 +625,6 @@ def list_cameras(
 def get_camera(cid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _get_or_404(db, Camera, cid)
 
-@app.put("/api/cameras/{cid}", response_model=CameraOut, tags=["Cameras"])
-def update_camera(cid: int, data: CameraUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return _update(db, Camera, cid, data.model_dump())
-
 @app.put("/api/cameras/bulk-update", response_model=List[CameraOut], tags=["Cameras"])
 def bulk_update_cameras(
     camera_ids: List[int],
@@ -637,20 +633,34 @@ def bulk_update_cameras(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Bulk update a single field on multiple cameras"""
-    allowed = {"status", "recorder_id", "rack_id", "switch_id", "patch_panel_id", "cam_type", "location"}
+    """Bulk update a single field on multiple cameras.
+    NOTE: This route MUST be defined before /api/cameras/{cid}
+    otherwise FastAPI tries to parse 'bulk-update' as an int → 422.
+    """
+    allowed = {"status", "recorder_id", "rack_id", "switch_id", "patch_panel_id",
+               "patch_panel_port", "cam_type", "location", "cable_route"}
     if field not in allowed:
         raise HTTPException(400, f"Field '{field}' not allowed for bulk update")
+    # Convert to int for FK fields, None for empty string
+    int_fields = {"recorder_id", "rack_id", "switch_id", "patch_panel_id", "patch_panel_port"}
+    if field in int_fields:
+        coerced = int(value) if value and value not in ("", "null", "None") else None
+    else:
+        coerced = value
     updated = []
     for cid in camera_ids:
         cam = db.query(Camera).get(cid)
         if cam:
-            setattr(cam, field, value)
+            setattr(cam, field, coerced)
             updated.append(cam)
     db.commit()
     for c in updated:
         db.refresh(c)
     return updated
+
+@app.put("/api/cameras/{cid}", response_model=CameraOut, tags=["Cameras"])
+def update_camera(cid: int, data: CameraUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _update(db, Camera, cid, data.model_dump())
 
 @app.delete("/api/cameras/{cid}", tags=["Cameras"])
 def delete_camera(cid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
