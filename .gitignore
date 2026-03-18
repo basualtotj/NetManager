@@ -11,3 +11,10 @@ __pycache__/
 # Environment
 venv/
 .env
+
+# Database files
+data/
+*.db
+*.db-shm
+*.db-wal
+
