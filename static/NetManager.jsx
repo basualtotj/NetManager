@@ -1510,6 +1510,9 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedCameras, setSelectedCameras] = useState([]);
   const [bulkModal, setBulkModal] = useState({ open: false, action: null });
+  const [bulkMultiModal, setBulkMultiModal] = useState(false);
+  const [cameraFilter, setCameraFilter] = useState({ type: null, id: null, label: "" });
+  const [cameraBarFilters, setCameraBarFilters] = useState({ recorder: "", rack: "", switch: "", patchPanel: "", camType: "", status: "" });
   const [topoFullscreen, setTopoFullscreen] = useState(false);
   const [reportHTML, setReportHTML] = useState(null);
   const printFrameRef = useRef(null);
@@ -1709,6 +1712,43 @@ function App() {
       update("cameras", data.cameras.filter(c => !selectedCameras.includes(c.id)));
     }
     setSelectedCameras([]);
+  };
+
+  // Bulk multi-field update — applies multiple fields at once
+  const bulkMultiUpdate = async (fieldsToApply) => {
+    // fieldsToApply: [{ frontendField, backendField, value }, ...]
+    if (!fieldsToApply.length) return;
+    let successCount = 0;
+    const ids = selectedCameras.map(id => parseInt(id));
+    const localUpdates = {};
+
+    for (const { frontendField, backendField, value } of fieldsToApply) {
+      if (apiMode) {
+        try {
+          const backendValue = String(value);
+          await api.put(`/api/cameras/bulk-update?field=${encodeURIComponent(backendField)}&value=${encodeURIComponent(backendValue)}`, ids);
+          localUpdates[frontendField] = value;
+          successCount++;
+        } catch (e) {
+          console.error(`Bulk multi-update failed for ${backendField}:`, e);
+          alert(`Error actualizando campo ${backendField}: ${e.message}`);
+        }
+      } else {
+        localUpdates[frontendField] = value;
+        successCount++;
+      }
+    }
+
+    if (Object.keys(localUpdates).length > 0) {
+      update("cameras", data.cameras.map(c =>
+        selectedCameras.includes(c.id) ? { ...c, ...localUpdates } : c
+      ));
+    }
+
+    setBulkMultiModal(false);
+    if (successCount > 0) {
+      alert(`✅ ${selectedCameras.length} cámaras actualizadas — ${successCount} campo(s) modificado(s)`);
+    }
   };
 
   // CSV Import
@@ -2179,7 +2219,14 @@ function App() {
                   ) : data.racks.map(rack => {
                     const camCount = data.cameras.filter(c => c.rackId === rack.id).length;
                     return (
-                      <div key={rack.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #1a2235", fontSize: "12px" }}>
+                      <div key={rack.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #1a2235", fontSize: "12px", cursor: "pointer", borderRadius: "4px", transition: "background 0.15s" }}
+                        onClick={() => {
+                          setCameraFilter({ type: "rack", id: rack.id, label: `Rack: ${rack.name}` });
+                          setCameraBarFilters(prev => ({ ...prev, rack: rack.id }));
+                          setActiveSection("cameras");
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(34,211,238,0.08)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                         <span style={{ color: "#cbd5e1" }}>{rack.name}</span>
                         <span style={{ color: "#22d3ee", fontFamily: "'JetBrains Mono', monospace" }}>{camCount} cámaras</span>
                       </div>
@@ -2194,7 +2241,14 @@ function App() {
                   ) : data.nvrs.map(nvr => {
                     const camCount = data.cameras.filter(c => c.nvrId === nvr.id).length;
                     return (
-                      <div key={nvr.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #1a2235", fontSize: "12px" }}>
+                      <div key={nvr.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #1a2235", fontSize: "12px", cursor: "pointer", borderRadius: "4px", transition: "background 0.15s" }}
+                        onClick={() => {
+                          setCameraFilter({ type: "recorder", id: nvr.id, label: `Grabador: ${nvr.name}` });
+                          setCameraBarFilters(prev => ({ ...prev, recorder: nvr.id }));
+                          setActiveSection("cameras");
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(245,158,11,0.08)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                         <span style={{ color: "#cbd5e1" }}><span style={{ color: "#64748b", fontSize: "10px" }}>{nvr.type || "NVR"}</span> {nvr.name}</span>
                         <span style={{ color: "#f59e0b", fontFamily: "'JetBrains Mono', monospace" }}>{camCount} / {nvr.channels || "?"} ch</span>
                       </div>
@@ -2336,6 +2390,69 @@ function App() {
                   onChange={e => { if (e.target.files[0]) importCSV(e.target.files[0], "cameras"); e.target.value = ""; }} />
               </div>
 
+              {/* Camera Filter Bar */}
+              {(() => {
+                const anyFilter = cameraFilter.type || Object.values(cameraBarFilters).some(v => v !== "");
+                return (
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginBottom: "12px" }}>
+                    {cameraFilter.type && (
+                      <span style={{
+                        display: "inline-flex", alignItems: "center", gap: "6px",
+                        background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.3)",
+                        borderRadius: "6px", padding: "4px 10px", fontSize: "11px", color: "#60a5fa", fontWeight: 600
+                      }}>
+                        Filtro: {cameraFilter.label}
+                        <span style={{ cursor: "pointer", marginLeft: "4px", color: "#f87171" }} onClick={() => {
+                          setCameraFilter({ type: null, id: null, label: "" });
+                          setCameraBarFilters({ recorder: "", rack: "", switch: "", patchPanel: "", camType: "", status: "" });
+                        }}>✕</span>
+                      </span>
+                    )}
+                    <select value={cameraBarFilters.recorder} onChange={e => setCameraBarFilters(p => ({ ...p, recorder: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Grabador: Todos</option>
+                      {data.nvrs.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
+                    </select>
+                    <select value={cameraBarFilters.rack} onChange={e => setCameraBarFilters(p => ({ ...p, rack: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Rack: Todos</option>
+                      {data.racks.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                    </select>
+                    <select value={cameraBarFilters.switch} onChange={e => setCameraBarFilters(p => ({ ...p, switch: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Switch: Todos</option>
+                      {data.switches.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <select value={cameraBarFilters.patchPanel} onChange={e => setCameraBarFilters(p => ({ ...p, patchPanel: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Patch Panel: Todos</option>
+                      {data.patchPanels.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                    <select value={cameraBarFilters.camType} onChange={e => setCameraBarFilters(p => ({ ...p, camType: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Tipo: Todos</option>
+                      <option value="ip-net">IP (Red/Switch)</option>
+                      <option value="ip-poe-nvr">IP (PoE NVR)</option>
+                      <option value="analog">Analógica</option>
+                      <option value="wifi">WiFi</option>
+                    </select>
+                    <select value={cameraBarFilters.status} onChange={e => setCameraBarFilters(p => ({ ...p, status: e.target.value }))}
+                      style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", minWidth: "110px" }}>
+                      <option value="">Estado: Todos</option>
+                      <option value="online">Online</option>
+                      <option value="offline">Offline</option>
+                      <option value="maintenance">Mantenimiento</option>
+                    </select>
+                    {anyFilter && !cameraFilter.type && (
+                      <span style={{ cursor: "pointer", fontSize: "11px", color: "#f87171", fontWeight: 600 }}
+                        onClick={() => setCameraBarFilters({ recorder: "", rack: "", switch: "", patchPanel: "", camType: "", status: "" })}>
+                        ✕ Limpiar filtros
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Bulk Actions Bar */}
               {selectedCameras.length > 0 && (
                 <div style={{
@@ -2355,6 +2472,7 @@ function App() {
                   <Btn variant="secondary" size="sm" onClick={() => setBulkModal({ open: true, action: "cableRoute" })}>Ruta Cableado</Btn>
                   <Btn variant="secondary" size="sm" onClick={() => setBulkModal({ open: true, action: "camType" })}>Cambiar Tipo</Btn>
                   <Btn variant="secondary" size="sm" onClick={() => setBulkModal({ open: true, action: "status" })}>Cambiar Estado</Btn>
+                  <Btn variant="primary" size="sm" onClick={() => setBulkMultiModal(true)}>✏️ Editar por Lote</Btn>
                   <div style={{ flex: 1 }} />
                   <Btn variant="danger" size="sm" icon={Icons.trash} onClick={bulkDeleteCameras}>Eliminar</Btn>
                   <Btn variant="ghost" size="sm" onClick={() => setSelectedCameras([])}>Deseleccionar</Btn>
@@ -2416,7 +2534,16 @@ function App() {
                     </span>
                   )},
                 ]}
-                data={data.cameras}
+                data={(() => {
+                  let filtered = data.cameras;
+                  if (cameraBarFilters.recorder) filtered = filtered.filter(c => String(c.nvrId) === String(cameraBarFilters.recorder));
+                  if (cameraBarFilters.rack) filtered = filtered.filter(c => String(c.rackId) === String(cameraBarFilters.rack));
+                  if (cameraBarFilters.switch) filtered = filtered.filter(c => String(c.switchId) === String(cameraBarFilters.switch));
+                  if (cameraBarFilters.patchPanel) filtered = filtered.filter(c => String(c.patchPanelId) === String(cameraBarFilters.patchPanel));
+                  if (cameraBarFilters.camType) filtered = filtered.filter(c => c.camType === cameraBarFilters.camType);
+                  if (cameraBarFilters.status) filtered = filtered.filter(c => c.status === cameraBarFilters.status);
+                  return filtered;
+                })()}
                 onEdit={(item) => setModal({ open: true, type: "camera", item })}
                 onDelete={(item) => deleteItem("cameras", item.id)}
                 emptyMessage="No hay cámaras registradas. Importa un CSV o agrega manualmente."
@@ -3100,6 +3227,19 @@ function App() {
         />
       </Modal>
 
+      {/* Bulk Multi-Field Edit Modal */}
+      <Modal isOpen={bulkMultiModal} onClose={() => setBulkMultiModal(false)} title={`Editar por Lote — ${selectedCameras.length} cámaras`} width="600px">
+        <BulkMultiFieldForm
+          count={selectedCameras.length}
+          nvrs={data.nvrs}
+          racks={data.racks}
+          switches={data.switches}
+          patchPanels={data.patchPanels}
+          onApply={(fieldsToApply) => bulkMultiUpdate(fieldsToApply)}
+          onCancel={() => setBulkMultiModal(false)}
+        />
+      </Modal>
+
       {/* Report Preview Modal */}
       {reportHTML && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.85)", zIndex: 10000, display: "flex", flexDirection: "column" }}>
@@ -3458,6 +3598,109 @@ function BulkActionForm({ action, count, nvrs, racks, switches, patchPanels, onA
         <Btn variant="primary" onClick={() => onApply(config.field, value)} disabled={!value}>
           Aplicar a {count} cámaras
         </Btn>
+      </div>
+    </div>
+  );
+}
+
+function BulkMultiFieldForm({ count, nvrs, racks, switches, patchPanels, onApply, onCancel }) {
+  const BULK_FIELDS = [
+    { key: "nvrId", backendKey: "recorder_id", label: "Grabador", type: "select",
+      options: nvrs.map(n => ({ value: n.id, label: `${n.type || "NVR"} - ${n.name}` })) },
+    { key: "rackId", backendKey: "rack_id", label: "Rack", type: "select",
+      options: racks.map(r => ({ value: r.id, label: r.name })) },
+    { key: "switchId", backendKey: "switch_id", label: "Switch", type: "select",
+      options: switches.map(s => ({ value: s.id, label: s.name })) },
+    { key: "patchPanelId", backendKey: "patch_panel_id", label: "Patch Panel", type: "select",
+      options: patchPanels.map(p => ({ value: p.id, label: p.name })) },
+    { key: "location", backendKey: "location", label: "Ubicación", type: "text" },
+    { key: "cableRoute", backendKey: "cable_route", label: "Ruta de Cableado", type: "text" },
+    { key: "camType", backendKey: "cam_type", label: "Tipo de Cámara", type: "select",
+      options: [
+        { value: "ip-net", label: "IP (Red/Switch)" },
+        { value: "ip-poe-nvr", label: "IP (PoE NVR)" },
+        { value: "analog", label: "Analógica" },
+        { value: "wifi", label: "WiFi" },
+      ] },
+    { key: "status", backendKey: "status", label: "Estado", type: "select",
+      options: [
+        { value: "online", label: "Online" },
+        { value: "offline", label: "Offline" },
+        { value: "maintenance", label: "Mantenimiento" },
+      ] },
+  ];
+
+  const [enabled, setEnabled] = useState({});
+  const [values, setValues] = useState({});
+
+  const toggleField = (key) => setEnabled(prev => ({ ...prev, [key]: !prev[key] }));
+  const setValue = (key, val) => setValues(prev => ({ ...prev, [key]: val }));
+
+  const enabledCount = Object.values(enabled).filter(Boolean).length;
+
+  const handleApply = () => {
+    const fieldsToApply = BULK_FIELDS
+      .filter(f => enabled[f.key] && (values[f.key] !== undefined && values[f.key] !== ""))
+      .map(f => ({ frontendField: f.key, backendField: f.backendKey, value: values[f.key] }));
+    if (fieldsToApply.length === 0) { alert("Selecciona y completa al menos un campo."); return; }
+    onApply(fieldsToApply);
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: "13px", color: "#94a3b8", marginBottom: "16px" }}>
+        Edita múltiples campos a la vez para <strong style={{ color: "#60a5fa" }}>{count} cámaras</strong> seleccionadas.
+        Marca los campos que deseas modificar.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        {BULK_FIELDS.map(field => (
+          <div key={field.key} style={{
+            display: "flex", alignItems: "center", gap: "10px",
+            background: enabled[field.key] ? "rgba(59,130,246,0.08)" : "transparent",
+            border: `1px solid ${enabled[field.key] ? "rgba(59,130,246,0.3)" : "#1e293b"}`,
+            borderRadius: "8px", padding: "8px 12px", transition: "all 0.15s"
+          }}>
+            <input type="checkbox" checked={!!enabled[field.key]} onChange={() => toggleField(field.key)}
+              style={{ accentColor: "#3b82f6", cursor: "pointer", width: "16px", height: "16px" }} />
+            <span style={{ fontSize: "12px", color: enabled[field.key] ? "#e2e8f0" : "#64748b", fontWeight: 600, minWidth: "120px" }}>
+              {field.label}
+            </span>
+            <div style={{ flex: 1 }}>
+              {field.type === "select" ? (
+                <select value={values[field.key] || ""} onChange={e => setValue(field.key, e.target.value)}
+                  disabled={!enabled[field.key]}
+                  style={{
+                    width: "100%", background: "#0f172a", color: enabled[field.key] ? "#e2e8f0" : "#475569",
+                    border: "1px solid #334155", borderRadius: "6px", padding: "6px 8px", fontSize: "12px",
+                    opacity: enabled[field.key] ? 1 : 0.5
+                  }}>
+                  <option value="">— Seleccionar —</option>
+                  {field.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              ) : (
+                <input type="text" value={values[field.key] || ""} onChange={e => setValue(field.key, e.target.value)}
+                  disabled={!enabled[field.key]}
+                  placeholder={`Ingrese ${field.label.toLowerCase()}...`}
+                  style={{
+                    width: "100%", background: "#0f172a", color: enabled[field.key] ? "#e2e8f0" : "#475569",
+                    border: "1px solid #334155", borderRadius: "6px", padding: "6px 8px", fontSize: "12px",
+                    opacity: enabled[field.key] ? 1 : 0.5
+                  }} />
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: "20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: "11px", color: "#64748b" }}>
+          {enabledCount > 0 ? `${enabledCount} campo(s) seleccionado(s)` : "Ningún campo seleccionado"}
+        </span>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
+          <Btn variant="primary" onClick={handleApply} disabled={enabledCount === 0}>
+            Aplicar {enabledCount} campo(s) a {count} cámaras
+          </Btn>
+        </div>
       </div>
     </div>
   );
